@@ -68,6 +68,16 @@ Como a conta não tem Copilot pago, os agentes vão usar o **Claude** (Claude Co
 4. Settings → Actions → General: marcar **"Allow GitHub Actions to create and approve pull requests"** (necessário para o job `propor-pr`).
 5. **Backend local:** `AGENT_RUNTIME=github-actions`, `GITHUB_REPOSITORY=<dono>/<repo>` e `GH_BIN=<caminho do gh.exe>` (o `gh` não está no PATH). O backend usa `gh auth token`, nunca o `GITHUB_TOKEN` das Actions.
 
+### Ensaio no GitHub real em dry-run (2026-11-11)
+
+- **Repositório:** https://github.com/brunacarolinaprojetos/App-Fluxo-Tarefas-V1. O remote do professor ficou como `professor`, sem alteração.
+- **Configurado:** as Variables acima, o rótulo `origin:app` e "Actions podem criar PRs". O `AGENT_DRY_RUN` continua `true`.
+- **Ticket aberto pela tela de Atendimento:** gerou a issue #1 (autor `brunacarolinaprojetos`, com o rótulo `origin:app`) e o vínculo no SQLite.
+- **Execuções:** o run do dispatch processou em dry-run e publicou o controle e o resumo interno. O run do evento `issues` viu "Já processado" e não repetiu nada. Os dois terminaram com sucesso.
+- A mensagem do N1 apareceu no app e o ticket foi para "Em atendimento".
+
 ### Pendência
 
-Faltam o repositório próprio (onde as Actions vão rodar) e o secret do Claude cadastrado nele. Até lá, os arquivos ficam só locais.
+Para sair do dry-run: cadastrar o secret `AI_API_KEY` (chave da Anthropic) e mudar `AGENT_DRY_RUN` para `false`.
+
+O repositório próprio já existe; o secret é o único item pendente.

@@ -11,7 +11,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname, join } from "node:path";
 import {
   AGENTES, AUTOR_CONTROLE, ESQUEMA_RESPOSTA, FASES_SEM_REPETICAO, LIMITES, MAX_RODADAS_CORRECAO, caminhoPermitido, conferirAceite,
-  formatarControle, idRespostaN1, lerControle, marcaMensagem, neutralizar, prefixoBranch, respostaIntegrada, simularResultado,
+  CABECALHO_N1, formatarControle, idRespostaN1, lerControle, marcaMensagem, neutralizar, prefixoBranch, respostaIntegrada, simularResultado,
   validarOrigem, validarRelatorio,
 } from "./contrato.mjs";
 
@@ -53,12 +53,25 @@ async function salvarControle(controle, estado) {
 const comentarNaIssue = (body) => github("POST", `/repos/${REPO}/issues/${ISSUE}/comments`, { body });
 const numeroDoPr = (prUrl) => Number(String(prUrl).split("/").pop());
 
-/** Publica a resposta do N1 na issue uma única vez: procura o ID estável antes de escrever. */
-async function publicarRespostaN1(id, texto) {
+/**
+ * Publica uma mensagem do N1 ao cliente na issue, uma única vez por ID estável.
+ * O app espelha esses comentários à medida que aparecem: é assim que o cliente acompanha o andamento.
+ */
+async function publicarN1(id, texto) {
   const lista = await comentarios();
-  if (lista.some((c) => c.user?.login === AUTOR_CONTROLE && c.body?.startsWith(marcaMensagem(id)))) { console.log(`Resposta ${id} já publicada.`); return; }
-  await comentarNaIssue(`${marcaMensagem(id)}\n**Resposta do Suporte N1 ao cliente**\n\n${neutralizar(texto)}`);
+  if (lista.some((c) => c.user?.login === AUTOR_CONTROLE && c.body?.startsWith(marcaMensagem(id)))) { console.log(`Mensagem ${id} já publicada.`); return; }
+  await comentarNaIssue(`${marcaMensagem(id)}\n${CABECALHO_N1}\n\n${neutralizar(texto)}`);
 }
+/** Marcos do andamento que o N1 comunica ao cliente (textos curtos, sem detalhes internos). */
+const AVISOS = {
+  recebido: "Recebemos seu pedido e ele já está com a nossa equipe de atendimento. Vou te avisando por aqui conforme as coisas andam.",
+  analise: "Seu pedido precisa de uma análise da nossa equipe antes de seguir. Assim que houver novidade, aviso aqui.",
+  prAberto: "Preparamos uma alteração para atender ao seu pedido. Agora ela passa por revisão e por uma verificação automática.",
+  correcaoEnviada: "A correção foi aplicada e a alteração está sendo verificada de novo.",
+  validado: "A alteração passou na verificação automática e agora aguarda a integração pela equipe.",
+  corrigindo: "A verificação automática encontrou um problema na alteração. Já estamos corrigindo.",
+  pendente: "A alteração precisa de uma análise da nossa equipe antes de seguir. Aviso aqui assim que houver novidade.",
+};
 const fecharIssue = () => github("PATCH", `/repos/${REPO}/issues/${ISSUE}`, { state: "closed", state_reason: "completed" });
 
 // ---------- preparar ----------
@@ -106,6 +119,7 @@ async function preparar() {
     resultPath, prUrl: null, chamadasIA: anterior?.chamadasIA ?? 0, rodadasCorrecao: 0, correcao: false, resumoComentarioId: null,
   });
   gravarJson(ARQ.entrada, { ...base, resultPath });
+  await publicarN1(`n1-${origem.requestId}-recebido`, AVISOS.recebido);
   console.log(`Entrada do coordenador montada para ${origem.requestId}.`);
   saida("seguir", "true");
 }
@@ -223,11 +237,16 @@ async function publicar() {
     const motivo = v.ok ? "a correção não trouxe código" : `resultado rejeitado pela validação: ${v.erros.slice(0, 5).join("; ")}`;
     await salvarControle(controle, { ...estado, fase: estado.correcao ? "pendente-instrutor" : "revisao-humana", chamadasIA, erro: motivo });
     if (estado.correcao) await comentarNaIssue(`**Pendência para o instrutor** (request \`${estado.requestId}\`): ${neutralizar(motivo)}. O PR continua aberto: ${estado.prUrl}`);
+    await publicarN1(`n1-${estado.requestId}-${estado.correcao ? "pendente" : "analise"}`, estado.correcao ? AVISOS.pendente : AVISOS.analise);
     return saida("proposta", "false");
   }
   gravarJson(estado.resultPath, { requestId: entrada.requestId, ...v.relatorio });
   let resumoComentarioId = estado.resumoComentarioId;
   if (!resumoComentarioId) resumoComentarioId = (await comentarNaIssue(resumoInterno(v.relatorio, res))).id;
+  // Andamento real de cada especialista, na voz do N1 (publicText), na ordem em que aconteceu.
+  for (const u of v.relatorio.updates) {
+    if (u.publicText) await publicarN1(`n1-${estado.requestId}-r${estado.rodadasCorrecao ?? 0}-${u.id}`, u.publicText);
+  }
 
   if (v.relatorio.outcome === "code") {
     gravarJson(ARQ.proposta, { requestId: entrada.requestId, issue: ISSUE, alteracoes: v.alteracoes, allowedFiles: v.relatorio.allowedFiles });
@@ -243,7 +262,7 @@ async function publicar() {
     ...estado, fase, chamadasIA, dryRun: res.dryRun, resumoComentarioId, erro: null, relatorio: v.relatorio,
     respostaFinal: { id, texto: v.relatorio.publicText },
   });
-  await publicarRespostaN1(id, v.relatorio.publicText);
+  await publicarN1(id, v.relatorio.publicText);
   if (v.relatorio.outcome === "answered") await fecharIssue();
   saida("proposta", "false");
 }
@@ -289,6 +308,7 @@ async function abrirPr() {
     prUrl = pr.html_url;
   }
   await salvarControle(controle, { ...estado, fase: "pr-aberto", prUrl, branch, correcao: false });
+  await publicarN1(estado.correcao ? `n1-${estado.requestId}-correcao-${estado.rodadasCorrecao ?? 1}` : `n1-${estado.requestId}-pr`, estado.correcao ? AVISOS.correcaoEnviada : AVISOS.prAberto);
   saida("branch", branch);
   saida("sha", git("rev-parse", "HEAD"));
 }
@@ -309,11 +329,15 @@ async function registrarBuild() {
   if (aceite.ok) {
     let atual = await salvarControle(controle, { ...estado, fase: "codigo-validado", build, aceite });
     await comentarNaIssue(`Build \`npm ci\` + \`npm run build\` + \`npm test\` do commit \`${build.sha.slice(0, 7)}\`: **ok**. Aceite conferido (origem do PR, requestId, caminhos de produto e build do commit atual).`);
-    if (env.AUTO_MERGE !== "true") { console.log("AUTO_MERGE=false: PR fica disponível para a demonstração."); return; }
+    if (env.AUTO_MERGE !== "true") {
+      await publicarN1(`n1-${estado.requestId}-validado-${build.sha.slice(0, 7)}`, AVISOS.validado);
+      console.log("AUTO_MERGE=false: PR fica disponível para a demonstração."); return;
+    }
     // Merge do commit conferido (sha), pelas regras normais da branch: sem bypass.
     const m = await github("PUT", `/repos/${REPO}/pulls/${numeroPr}/merge`, { sha: build.sha, merge_method: "squash" }, { aceitar: [403, 405, 409, 422] });
     if (m?.erroStatus) {
       await comentarNaIssue(`Merge automático não permitido pelas regras do repositório (HTTP ${m.erroStatus}). O PR fica aberto para decisão do instrutor.`);
+      await publicarN1(`n1-${estado.requestId}-validado-${build.sha.slice(0, 7)}`, AVISOS.validado);
       return;
     }
     atual = { id: atual.id, estado: { ...atual.estado, fase: "codigo-validado" } };
@@ -325,10 +349,12 @@ async function registrarBuild() {
   if (rodadas >= MAX_RODADAS_CORRECAO) {
     await salvarControle(controle, { ...estado, fase: "pendente-instrutor", build, aceite, falha: erro });
     await comentarNaIssue(`**Pendência para o instrutor** (request \`${estado.requestId}\`): a correção automática já foi usada e o aceite continua falhando: ${neutralizar(erro)}. PR: ${estado.prUrl}. Para mais uma rodada, rode o workflow com \`retomar=true\`.`);
+    await publicarN1(`n1-${estado.requestId}-pendente`, AVISOS.pendente);
     return;
   }
   // Uma rodada automática: pede a correção no MESMO PR, com o erro curto e o requestId.
   await salvarControle(controle, { ...estado, fase: "corrigindo", build, aceite, falha: erro, rodadasCorrecao: rodadas + 1 });
+  await publicarN1(`n1-${estado.requestId}-corrigindo-${rodadas + 1}`, AVISOS.corrigindo);
   await github("POST", `/repos/${REPO}/issues/${numeroPr}/comments`, { body: `Correção automática solicitada (request \`${estado.requestId}\`, rodada ${rodadas + 1}/${MAX_RODADAS_CORRECAO}): ${neutralizar(erro)}` });
   await github("POST", `/repos/${REPO}/actions/workflows/${env.AGENT_WORKFLOW ?? "ai-agents.yml"}/dispatches`, { ref: BASE, inputs: { issue_number: String(ISSUE) } });
   console.log("Correção solicitada no mesmo PR.");
@@ -345,6 +371,7 @@ async function entregarDepoisDoMerge({ id, estado }) {
     if (pr.head.sha !== estado.build?.sha) {
       await salvarControle(atual, { ...estado, fase: "pendente-instrutor", erro: "O merge incluiu um commit diferente do conferido." });
       await comentarNaIssue("**Pendência para o instrutor:** o PR foi integrado com um commit diferente do que passou no build. Confira antes de responder ao cliente.");
+      await publicarN1(`n1-${estado.requestId}-pendente`, AVISOS.pendente);
       return;
     }
     const cmp = await github("GET", `/repos/${REPO}/compare/${pr.merge_commit_sha}...${BASE}`);
@@ -353,7 +380,7 @@ async function entregarDepoisDoMerge({ id, estado }) {
   }
   if (atual.estado.fase === "merge-confirmado") {
     const resposta = { id: idRespostaN1(estado.requestId), texto: respostaIntegrada(estado.relatorio.publicText) };
-    await publicarRespostaN1(resposta.id, resposta.texto);
+    await publicarN1(resposta.id, resposta.texto);
     atual = await salvarControle(atual, { ...atual.estado, fase: "integrado", respostaFinal: resposta });
   }
   if (atual.estado.fase === "integrado") {

@@ -118,7 +118,27 @@ function NovoTicket({ aoEnviar, enviando }) {
 }
 
 /** Área de atendimento no estilo de chat: cada ticket é uma conversa. */
-export function TelaAtendimento({ ticketId, conversa, enviando, aoEnviar, aoRenomear, aoMudarStatus, aoExcluir }) {
+/** Linha de sincronização: issue vinculada, horário da última busca e botão Atualizar. */
+function Sincronizacao({ tracking, sincronizando, sincronizadoEm, aoSincronizar }) {
+  const hora = sincronizadoEm ? sincronizadoEm.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : null;
+  return (
+    <div className="atd-sinc" role="status">
+      {tracking?.issueUrl ? (
+        <a className="atd-sinc-issue" href={tracking.issueUrl} target="_blank" rel="noreferrer">Issue #{tracking.issueNumber}</a>
+      ) : null}
+      <span className="atd-sinc-texto">
+        {tracking?.ativo ? "Sincronizando automaticamente" : "Atendimento encerrado na issue"}
+        {hora ? ` · atualizado às ${hora}` : ""}
+      </span>
+      <button type="button" className="botao botao-fantasma atd-sinc-botao" onClick={aoSincronizar} disabled={sincronizando}>
+        <Icone nome="atualizar" tamanho={16} className={sincronizando ? "girando" : ""} />
+        <span>{sincronizando ? "Atualizando…" : "Atualizar"}</span>
+      </button>
+    </div>
+  );
+}
+
+export function TelaAtendimento({ ticketId, conversa, enviando, aoEnviar, aoRenomear, aoMudarStatus, aoExcluir, aoSincronizar, sincronizando, sincronizadoEm }) {
   const fim = useRef(null);
   const quantidade = conversa?.messages?.length ?? 0;
   const primeiraRolagem = useRef(true);
@@ -173,17 +193,23 @@ export function TelaAtendimento({ ticketId, conversa, enviando, aoEnviar, aoReno
         ) : null}
       </header>
 
+      {ticket.tracking ? (
+        <Sincronizacao tracking={ticket.tracking} sincronizando={sincronizando} sincronizadoEm={sincronizadoEm} aoSincronizar={aoSincronizar} />
+      ) : null}
+
       <div className="atd-rolagem">
         <ol className="atd-mensagens" aria-label="Conversa" aria-live="polite">
           {messages.map((m) => <Mensagem key={m.id} mensagem={m} />)}
-          {aguardandoResposta(ticket, messages) && !enviando ? (
+          {(aguardandoResposta(ticket, messages) || ticket.tracking?.ativo) && !enviando ? (
             <li className="msg msg-agente msg-aguardando">
               <span className="msg-avatar" aria-hidden="true"><Icone nome="conversa" tamanho={16} /></span>
               <div className="msg-corpo">
-                <p className="msg-autor">Atendimento</p>
+                <p className="msg-autor">{ticket.tracking?.ativo ? "Suporte N1" : "Atendimento"}</p>
                 <p className="msg-espera">
                   <span className="pontos" aria-hidden="true"><i /><i /><i /></span>
-                  Recebemos sua mensagem. A resposta aparece aqui assim que alguém do atendimento responder.
+                  {ticket.tracking?.ativo
+                    ? "Acompanhando o andamento do seu pedido. Cada novidade aparece aqui assim que acontece."
+                    : "Recebemos sua mensagem. A resposta aparece aqui assim que alguém do atendimento responder."}
                 </p>
               </div>
             </li>

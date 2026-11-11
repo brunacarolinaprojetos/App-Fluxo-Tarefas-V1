@@ -12,7 +12,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { ErroHttp, invalido, naoEncontrado, texto } from "./http.js";
 import { transacao } from "./db.js";
-import { configuracao, encaminharTicket, reconciliar } from "./integracaoGithub.js";
+import { acompanhamento, configuracao, encaminharTicket, reconciliar } from "./integracaoGithub.js";
 
 const STATUS = ["open", "in_progress", "resolved"];
 const ROLES = ["user", "agent"];
@@ -97,12 +97,14 @@ export function rotasDeTickets(app, db) {
   app.get("/api/tickets/:id", async (ctx) => {
     const dono = donoDoPedido(ctx);
     const t = buscar(ctx.params.id, dono);
+    // Enquanto a tela está aberta, cada consulta sincroniza com a issue; `?sincronizar=1` (botão Atualizar) força na hora.
+    const forcar = ctx.url.searchParams.get("sincronizar") === "1";
     try {
-      await reconciliar(db, t.id, { entregar: (publicText) => respostaDoAtendimento(t.id, "Suporte N1", publicText) });
+      await reconciliar(db, t.id, { forcar, entregar: (publicText) => respostaDoAtendimento(t.id, "Suporte N1", publicText) });
     } catch (e) {
       console.error(`[atendimento] reconciliação do ticket ${t.id} falhou: ${e.message}`);
     }
-    return { ticket: saidaTicket(buscar(t.id, dono)), messages: mensagens(t.id) };
+    return { ticket: { ...saidaTicket(buscar(t.id, dono)), tracking: acompanhamento(db, t.id) }, messages: mensagens(t.id) };
   });
 
   app.patch("/api/tickets/:id", (ctx) => {

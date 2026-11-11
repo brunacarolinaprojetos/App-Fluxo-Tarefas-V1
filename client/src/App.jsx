@@ -256,6 +256,9 @@ export function App() {
           enviando={atendimento.enviando}
           aoEnviar={atendimento.enviar}
           aoMudarStatus={atendimento.mudarStatus}
+          aoSincronizar={atendimento.sincronizar}
+          sincronizando={atendimento.sincronizando}
+          sincronizadoEm={atendimento.sincronizadoEm}
           aoRenomear={(ticket) => setDialogo({ tipo: "renomear-ticket", ticket })}
           aoExcluir={(ticket) => setDialogo({ tipo: "excluir-ticket", ticket })}
         />

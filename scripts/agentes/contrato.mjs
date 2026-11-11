@@ -16,6 +16,23 @@ export const MAX_RODADAS_CORRECAO = 1;
 /** ID estável da resposta do N1: o mesmo em qualquer retomada, então nunca duplica. */
 export const idRespostaN1 = (requestId) => `n1-final-${requestId}`;
 export const marcaMensagem = (id) => `<!-- fluxo-msg:${id} -->`;
+export const CABECALHO_N1 = "**Suporte N1 → cliente**";
+
+/**
+ * Mensagens do N1 ao cliente publicadas na issue, na ordem em que foram escritas.
+ * Só valem as do workflow (github-actions[bot]) com o marcador; o texto volta sem a neutralização.
+ */
+export function lerMensagensN1(comentarios = []) {
+  const saida = [];
+  for (const c of comentarios) {
+    if (c.user?.login !== AUTOR_CONTROLE) continue;
+    const m = /^<!-- fluxo-msg:([a-z0-9-]{1,120}) -->\n/.exec(c.body ?? "");
+    if (!m) continue;
+    const texto = c.body.slice(m[0].length).replace(CABECALHO_N1, "").replace(/​/g, "").replace(/&lt;!--/g, "<!--").trim().slice(0, LIMITES.publicText);
+    if (texto) saida.push({ id: m[1], texto });
+  }
+  return saida;
+}
 /** Resposta depois do merge: integrado no código, mas o app local de cada pessoa ainda precisa ser atualizado. */
 export const respostaIntegrada = (publicText) =>
   `${publicText.trim()}\n\nA alteração foi integrada ao código principal do Fluxo. Para ver a novidade, o app local precisa ser atualizado (baixar a versão nova e reiniciar).`.slice(0, LIMITES.publicText);
@@ -114,12 +131,12 @@ export function validarRelatorio(bruto) {
 export function simularResultado(entrada) {
   return {
     outcome: "answered",
-    publicText: "Olá! Recebemos seu pedido e ele já está com a nossa equipe. Assim que tivermos uma resposta, ela aparece aqui nesta conversa.",
+    publicText: "Obrigado pela mensagem! Esta é uma resposta de ensaio (modo de demonstração, sem IA). No atendimento real, a resposta completa ao seu pedido apareceria aqui.",
     agents: ["coordenador", "n1"],
     allowedFiles: [],
     criteria: [],
     updates: [
-      { id: "u1-entendido", agent: "n1", internalText: `[dry-run] Pedido ${entrada.requestId} lido; nenhuma chamada à IA foi feita.`, publicText: "Recebemos seu pedido." },
+      { id: "u1-entendido", agent: "n1", internalText: `[dry-run] Pedido ${entrada.requestId} lido; nenhuma chamada à IA foi feita.`, publicText: "Li o seu pedido e já entendi o que você precisa. Estou preparando a resposta." },
     ],
     arquivosParaLer: [],
     alteracoes: [],

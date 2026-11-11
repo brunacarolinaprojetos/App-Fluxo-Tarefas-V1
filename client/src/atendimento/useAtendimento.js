@@ -13,6 +13,8 @@ export function useAtendimento({ ativo, ticketId, abrirTicket, aoErro }) {
   const [tickets, setTickets] = useState(null);
   const [conversa, setConversa] = useState(null); // { ticket, messages }
   const [enviando, setEnviando] = useState(false);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [sincronizadoEm, setSincronizadoEm] = useState(null);
   const conversaRef = useRef(conversa);
   conversaRef.current = conversa;
   const enviandoRef = useRef(false);
@@ -56,7 +58,9 @@ export function useAtendimento({ ativo, ticketId, abrirTicket, aoErro }) {
         const dados = await api.tickets.detalhe(ticketId);
         const atual = conversaRef.current;
         if (!atual || atual.ticket.id !== ticketId) return;
-        const mudou = dados.messages.length !== atual.messages.length || dados.ticket.status !== atual.ticket.status || dados.ticket.title !== atual.ticket.title;
+        setSincronizadoEm(new Date());
+        const mudou = dados.messages.length !== atual.messages.length || dados.ticket.status !== atual.ticket.status
+          || dados.ticket.title !== atual.ticket.title || JSON.stringify(dados.ticket.tracking) !== JSON.stringify(atual.ticket.tracking);
         if (mudou) {
           setConversa(dados);
           recarregarLista().catch(() => {});
@@ -110,6 +114,22 @@ export function useAtendimento({ ativo, ticketId, abrirTicket, aoErro }) {
     }
   }, [aoErro, recarregarLista]);
 
+  /** Botão "Atualizar": busca na issue agora, sem esperar o próximo ciclo. */
+  const sincronizar = useCallback(async () => {
+    if (!ticketId || enviandoRef.current) return;
+    setSincronizando(true);
+    try {
+      const dados = await api.tickets.detalhe(ticketId, { sincronizar: true });
+      if (conversaRef.current?.ticket?.id === ticketId) setConversa(dados);
+      setSincronizadoEm(new Date());
+      recarregarLista().catch(() => {});
+    } catch (e) {
+      aoErro(e.message);
+    } finally {
+      setSincronizando(false);
+    }
+  }, [ticketId, aoErro, recarregarLista]);
+
   const renomear = (id, title) => atualizarTicket(id, () => api.tickets.renomear(id, title));
   const mudarStatus = (id, status) => atualizarTicket(id, () => api.tickets.mudarStatus(id, status));
 
@@ -125,5 +145,5 @@ export function useAtendimento({ ativo, ticketId, abrirTicket, aoErro }) {
     }
   };
 
-  return { tickets, conversa, enviando, enviar, renomear, mudarStatus, excluir, recarregarLista };
+  return { tickets, conversa, enviando, enviar, renomear, mudarStatus, excluir, recarregarLista, sincronizar, sincronizando, sincronizadoEm };
 }

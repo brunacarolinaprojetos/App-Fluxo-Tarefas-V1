@@ -405,6 +405,18 @@ textarea.campo-entrada { min-height: 96px; resize: vertical; }
 .selo-status[data-tom="andamento"] { background: var(--oceano-fraco); color: var(--oceano-escuro); }
 .selo-status[data-tom="resolvido"] { background: #e6f4ec; color: #1f6b41; }
 
+.atd-sinc {
+  display: flex; align-items: center; gap: var(--e3); flex-wrap: wrap;
+  padding: var(--e1) var(--e6);
+  border-bottom: 1px solid var(--borda);
+  background: var(--fundo);
+  font-size: var(--meta); color: var(--secundario);
+}
+.atd-sinc-issue { font-weight: 600; color: var(--oceano); text-decoration: none; }
+.atd-sinc-issue:hover { text-decoration: underline; }
+.atd-sinc-texto { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.atd-sinc-botao { min-height: 32px; padding: var(--e1) var(--e3); font-size: var(--meta); }
+
 .atd-rolagem { flex: 1; min-height: 0; overflow-y: auto; padding: var(--e8) var(--e6) var(--e4); }
 .atd-mensagens { max-width: 768px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--e6); }
 

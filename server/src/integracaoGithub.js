@@ -5,10 +5,11 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { AUTOR_CONTROLE, FASES_COM_RESPOSTA, LIMITES, ROTULO_ORIGEM, corpoDaIssue, lerControle } from "../../scripts/agentes/contrato.mjs";
+import { AUTOR_CONTROLE, FASES_COM_RESPOSTA, LIMITES, ROTULO_ORIGEM, corpoDaIssue, lerControle, lerMensagensN1 } from "../../scripts/agentes/contrato.mjs";
 
 const executar = promisify(execFile);
-const INTERVALO_CONSULTA = 15_000;
+const INTERVALO_CONSULTA = 4_000; // tela aberta (o app consulta a cada 5 s): no máximo uma busca na issue por ciclo
+const INTERVALO_MINIMO = 2_000; // botão Atualizar: na hora, com um mínimo de folga
 
 export const configuracao = () => ({
   ativo: process.env.AGENT_RUNTIME === "github-actions",
@@ -70,33 +71,62 @@ export async function encaminharTicket(db, { ticket, conteudo, avisar }) {
   }
 }
 
-/**
- * Consulta o comentário de controle da issue e entrega no app a mensagem pública do N1 já validada.
- * Só lê comentários do workflow (github-actions[bot]) cujo vínculo bate com o do SQLite.
- */
-export async function reconciliar(db, ticketId, { entregar }) {
+/** Fases do vínculo em que não há mais nada a buscar na issue. */
+const ENCERRADAS = ["finalizado", "entregue", "falha-envio"];
+const emAndamento = new Set();
+
+/** Dados de acompanhamento para a tela: issue vinculada e se o app ainda está sincronizando. */
+export function acompanhamento(db, ticketId) {
   const cfg = configuracao();
-  if (!cfg.ativo) return;
   const v = db.prepare("SELECT * FROM ticket_github WHERE ticket_id = ?").get(ticketId);
-  if (!v?.issue_number || v.fase === "entregue" || v.fase === "falha-envio") return;
+  if (!v) return null;
+  return {
+    issueNumber: v.issue_number ?? null,
+    issueUrl: v.issue_number && cfg.repo ? `https://github.com/${cfg.repo}/issues/${v.issue_number}` : null,
+    fase: v.fase,
+    ativo: cfg.ativo && !ENCERRADAS.includes(v.fase),
+    sincronizadoEm: v.consultado_em ?? null,
+  };
+}
+
+/**
+ * Espelha no app as mensagens do N1 publicadas na issue, na ordem em que aparecem.
+ * Roda enquanto a tela do ticket consulta o backend (a cada 5 s, ou na hora com `forcar`).
+ * Só aceita comentários do workflow (github-actions[bot]) e só se o estado bate com o vínculo do SQLite.
+ * Cada mensagem tem ID estável e entra uma única vez.
+ */
+export async function reconciliar(db, ticketId, { entregar, forcar = false }) {
+  const cfg = configuracao();
+  if (!cfg.ativo || emAndamento.has(ticketId)) return;
+  const v = db.prepare("SELECT * FROM ticket_github WHERE ticket_id = ?").get(ticketId);
+  if (!v?.issue_number || ENCERRADAS.includes(v.fase)) return;
   const agora = Date.now();
-  if (v.consultado_em && agora - Date.parse(v.consultado_em) < INTERVALO_CONSULTA) return;
-  db.prepare("UPDATE ticket_github SET consultado_em = ? WHERE ticket_id = ?").run(new Date(agora).toISOString(), ticketId);
+  const intervalo = forcar ? INTERVALO_MINIMO : INTERVALO_CONSULTA;
+  if (v.consultado_em && agora - Date.parse(v.consultado_em) < intervalo) return;
+  emAndamento.add(ticketId);
+  try {
+    db.prepare("UPDATE ticket_github SET consultado_em = ? WHERE ticket_id = ?").run(new Date(agora).toISOString(), ticketId);
+    const comentarios = await github("GET", `/repos/${cfg.repo}/issues/${v.issue_number}/comments?per_page=100`);
+    const estado = lerControle(comentarios.filter((c) => c.user?.login === AUTOR_CONTROLE))?.estado;
+    if (!estado || estado.ticketId !== ticketId || estado.requestId !== v.request_id) return;
 
-  const comentarios = await github("GET", `/repos/${cfg.repo}/issues/${v.issue_number}/comments?per_page=100`);
-  const controle = lerControle(comentarios.filter((c) => c.user?.login === AUTOR_CONTROLE));
-  const estado = controle?.estado;
-  if (!estado || estado.ticketId !== ticketId || estado.requestId !== v.request_id) return;
-  db.prepare("UPDATE ticket_github SET fase = ?, run_id = ?, pr_url = ? WHERE ticket_id = ?").run(estado.fase, estado.runId ?? null, estado.prUrl ?? null, ticketId);
-
-  // Só entrega o que o controlador confirmou: sem código, resposta validada; com código, só depois do merge na main.
-  if (!FASES_COM_RESPOSTA.includes(estado.fase)) return;
-  const publicText = typeof estado.respostaFinal?.texto === "string" ? estado.respostaFinal.texto.trim().slice(0, LIMITES.publicText) : "";
-  const idMensagem = typeof estado.respostaFinal?.id === "string" ? estado.respostaFinal.id : `n1-final-${v.request_id}`;
-  const enviadas = JSON.parse(v.mensagens_enviadas || "[]");
-  if (publicText && !enviadas.includes(idMensagem)) {
-    entregar(publicText);
-    enviadas.push(idMensagem);
+    const enviadas = JSON.parse(v.mensagens_enviadas || "[]");
+    const novas = lerMensagensN1(comentarios).filter((m) => !enviadas.includes(m.id));
+    // Compatibilidade: estados antigos guardavam só a resposta final, sem comentário próprio.
+    const final = estado.respostaFinal;
+    if (FASES_COM_RESPOSTA.includes(estado.fase) && typeof final?.id === "string" && typeof final.texto === "string"
+      && !enviadas.includes(final.id) && !novas.some((m) => m.id === final.id)) {
+      novas.push({ id: final.id, texto: final.texto.trim().slice(0, LIMITES.publicText) });
+    }
+    for (const m of novas) {
+      entregar(m.texto);
+      enviadas.push(m.id);
+    }
+    // Encerra a sincronização quando a resposta final já chegou e o caso terminou.
+    const terminou = ["concluido", "integrado"].includes(estado.fase) && enviadas.includes(final?.id);
+    db.prepare("UPDATE ticket_github SET mensagens_enviadas = ?, fase = ?, run_id = ?, pr_url = ? WHERE ticket_id = ?")
+      .run(JSON.stringify(enviadas), terminou ? "finalizado" : estado.fase, estado.runId ?? null, estado.prUrl ?? null, ticketId);
+  } finally {
+    emAndamento.delete(ticketId);
   }
-  db.prepare("UPDATE ticket_github SET mensagens_enviadas = ?, fase = 'entregue' WHERE ticket_id = ?").run(JSON.stringify(enviadas), ticketId);
 }

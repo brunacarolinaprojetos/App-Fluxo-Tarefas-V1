@@ -88,6 +88,26 @@ const DESENHOS = {
       <path d="M20 3v6h-6" />
     </>
   ),
+  conversa: <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z" />,
+  "novo-ticket": (
+    <>
+      <path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" />
+      <path d="M17.5 3.5a2.12 2.12 0 0 1 3 3L13 14l-4 1 1-4Z" />
+    </>
+  ),
+  enviar: (
+    <>
+      <path d="M12 19V5" />
+      <path d="m5 12 7-7 7 7" />
+    </>
+  ),
+  check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+  reabrir: (
+    <>
+      <path d="M4 12a8 8 0 1 0 2.3-5.6" />
+      <path d="M4 3v6h6" />
+    </>
+  ),
 };
 
 export function Icone({ nome, tamanho = 18, rotulo, className = "", ...resto }) {

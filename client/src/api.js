@@ -42,4 +42,13 @@ export const api = {
     excluir: (id) => pedir("DELETE", `/cards/${id}`),
     mover: (id, listId, position) => pedir("PATCH", `/cards/${id}`, corpo({ listId, position })),
   },
+  tickets: {
+    listar: () => pedir("GET", "/tickets"),
+    abrir: (content) => pedir("POST", "/tickets", { content }),
+    detalhe: (id) => pedir("GET", `/tickets/${id}`),
+    renomear: (id, title) => pedir("PATCH", `/tickets/${id}`, { title }),
+    mudarStatus: (id, status) => pedir("PATCH", `/tickets/${id}`, { status }),
+    excluir: (id) => pedir("DELETE", `/tickets/${id}`),
+    enviar: (id, content) => pedir("POST", `/tickets/${id}/messages`, { content }),
+  },
 };

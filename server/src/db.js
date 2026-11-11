@@ -58,6 +58,30 @@ const MIGRACOES = [
      ('card-api', 'list-fazendo', 'Montar a API de quadros', 'Boards, listas e cartões com movimentação entre listas.', 0),
      ('card-paleta', 'list-pronto', 'Escolher a paleta de cores', '', 0),
      ('card-metricas', 'list-backlog', 'Medir tempo por cartão', '', 0);`,
+  // Atendimento: cada ticket é uma conversa; mensagens vêm do usuário, de um agente (humano ou autônomo) ou do sistema.
+  `CREATE TABLE ticket (
+     id TEXT PRIMARY KEY,
+     title TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'resolved')),
+     criado_em TEXT NOT NULL,
+     atualizado_em TEXT NOT NULL
+   );
+   CREATE TABLE ticket_mensagem (
+     id TEXT PRIMARY KEY,
+     ticket_id TEXT NOT NULL REFERENCES ticket(id) ON DELETE CASCADE,
+     role TEXT NOT NULL CHECK (role IN ('user', 'agent', 'system')),
+     author TEXT NOT NULL DEFAULT '',
+     content TEXT NOT NULL,
+     criado_em TEXT NOT NULL
+   );
+   CREATE INDEX ticket_mensagem_por_ticket ON ticket_mensagem (ticket_id, criado_em);
+   INSERT INTO ticket (id, title, status, criado_em, atualizado_em) VALUES
+     ('ticket-boas-vindas', 'Como convidar pessoas para um quadro?', 'in_progress', '2026-11-10T09:05:00.000Z', '2026-11-10T09:06:00.000Z');
+   INSERT INTO ticket_mensagem (id, ticket_id, role, author, content, criado_em) VALUES
+     ('msg-boas-vindas-1', 'ticket-boas-vindas', 'user', '', 'Oi! Quero que minha equipe veja o quadro "Sprint da semana". Como faço para convidar as pessoas?', '2026-11-10T09:05:00.000Z'),
+     ('msg-boas-vindas-2', 'ticket-boas-vindas', 'agent', 'Suporte Fluxo', 'Olá! O compartilhamento de quadros está chegando em breve. Por enquanto, todos que acessam este Fluxo enxergam os mesmos quadros, então sua equipe já consegue ver o "Sprint da semana" pelo mesmo endereço.
+
+Posso ajudar com mais alguma coisa?', '2026-11-10T09:06:00.000Z');`,
 ];
 
 /** `caminho` = arquivo do banco; `:memory:` nos testes. */

@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
 import { BarraLateral } from "./BarraLateral.jsx";
+import { TelaAtendimento } from "./atendimento/TelaAtendimento.jsx";
+import { useAtendimento } from "./atendimento/useAtendimento.js";
 import { TelaQuadro } from "./TelaQuadro.jsx";
 import { Botao } from "./componentes/Botao.jsx";
 import { Campo } from "./componentes/Campo.jsx";
@@ -36,7 +38,16 @@ function EstadoVazio({ titulo, descricao, children }) {
   );
 }
 
+/** Lê a área e o ticket a partir do caminho: `/quadro`, `/atendimento` ou `/atendimento/:id`. */
+function lerRota(caminho) {
+  const m = caminho.match(/^\/atendimento(?:\/([^/]+))?\/?$/);
+  if (m) return { tela: "atendimento", ticketId: m[1] ? decodeURIComponent(m[1]) : null };
+  return { tela: "quadros", ticketId: null };
+}
+
 export function App() {
+  const [caminho, setCaminho] = useState(() => window.location.pathname);
+  const { tela, ticketId } = lerRota(caminho);
   const [quadros, setQuadros] = useState(null);
   const [quadroId, setQuadroId] = useState(null);
   const [detalhe, setDetalhe] = useState(null);
@@ -88,6 +99,31 @@ export function App() {
   }, [quadroId, tentativa]);
 
   const recarregar = () => setTentativa((t) => t + 1);
+
+  // Navegação sem recarregar: o histórico do navegador (voltar/avançar) continua funcionando.
+  useEffect(() => {
+    const aoVoltar = () => setCaminho(window.location.pathname);
+    window.addEventListener("popstate", aoVoltar);
+    return () => window.removeEventListener("popstate", aoVoltar);
+  }, []);
+  const navegar = useCallback((destino) => {
+    setErro(null);
+    if (destino !== window.location.pathname) window.history.pushState(null, "", destino);
+    setCaminho(destino);
+  }, []);
+  const abrirTicket = useCallback((id) => navegar(id ? `/atendimento/${encodeURIComponent(id)}` : "/atendimento"), [navegar]);
+
+  const atendimento = useAtendimento({ ativo: tela === "atendimento", ticketId, abrirTicket, aoErro: setErro });
+
+  const renomearTicket = async (title) => {
+    const alvo = dialogo?.ticket;
+    if (alvo && (await atendimento.renomear(alvo.id, title))) setDialogo(null);
+  };
+
+  const excluirTicket = async () => {
+    const alvo = dialogo?.ticket;
+    if (alvo && (await atendimento.excluir(alvo.id))) setDialogo(null);
+  };
 
   const executar = async (acao, aoTerminar) => {
     try {
@@ -212,6 +248,19 @@ export function App() {
   };
 
   const conteudo = () => {
+    if (tela === "atendimento") {
+      return (
+        <TelaAtendimento
+          ticketId={ticketId}
+          conversa={atendimento.conversa}
+          enviando={atendimento.enviando}
+          aoEnviar={atendimento.enviar}
+          aoMudarStatus={atendimento.mudarStatus}
+          aoRenomear={(ticket) => setDialogo({ tipo: "renomear-ticket", ticket })}
+          aoExcluir={(ticket) => setDialogo({ tipo: "excluir-ticket", ticket })}
+        />
+      );
+    }
     if (quadros === null) {
       return (
         <>
@@ -256,22 +305,36 @@ export function App() {
   return (
     <div className="app">
       <BarraLateral
-        quadros={quadros}
-        quadroId={quadroId}
-        aoSelecionar={setQuadroId}
-        aoNovoQuadro={() => setDialogo({ tipo: "novo-quadro" })}
-        aoRenomear={(quadro) => setDialogo({ tipo: "renomear-quadro", quadro })}
-        aoExcluir={(quadro) => setDialogo({ tipo: "excluir-quadro", quadro })}
+        tela={tela}
+        aoNavegar={navegar}
+        quadrosProps={{
+          quadros,
+          quadroId,
+          aoSelecionar: setQuadroId,
+          aoNovoQuadro: () => setDialogo({ tipo: "novo-quadro" }),
+          aoRenomear: (quadro) => setDialogo({ tipo: "renomear-quadro", quadro }),
+          aoExcluir: (quadro) => setDialogo({ tipo: "excluir-quadro", quadro }),
+        }}
+        ticketsProps={{
+          tickets: atendimento.tickets,
+          ticketId,
+          aoRenomear: (ticket) => setDialogo({ tipo: "renomear-ticket", ticket }),
+          aoExcluir: (ticket) => setDialogo({ tipo: "excluir-ticket", ticket }),
+        }}
       />
 
-      <main className="canvas">
+      <main className={`canvas ${tela === "atendimento" ? "canvas-atendimento" : ""}`.trim()}>
         {erro ? (
           <div className="aviso" role="alert">
             <span className="aviso-texto">
               <Icone nome="alerta" tamanho={18} />
               <span>{erro}</span>
             </span>
-            <Botao icone="atualizar" onClick={recarregar}>Tentar de novo</Botao>
+            {tela === "atendimento" ? (
+              <Botao icone="fechar" onClick={() => setErro(null)}>Fechar</Botao>
+            ) : (
+              <Botao icone="atualizar" onClick={recarregar}>Tentar de novo</Botao>
+            )}
           </div>
         ) : null}
 
@@ -386,6 +449,35 @@ export function App() {
           descricao={`Excluir "${dialogo.cartao.title}" não dá para desfazer.`}
           rotuloConfirmar="Excluir cartão"
           aoConfirmar={() => void excluirCartao()}
+          aoFechar={() => setDialogo(null)}
+        />
+      ) : null}
+      {dialogo?.tipo === "renomear-ticket" ? (
+        <Dialogo aberto titulo="Renomear ticket" aoFechar={() => setDialogo(null)}>
+          <form
+            className="formulario"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const titulo = String(new FormData(e.currentTarget).get("title") ?? "").trim();
+              if (titulo) void renomearTicket(titulo);
+            }}
+          >
+            <Campo rotulo="Título do ticket" name="title" defaultValue={dialogo.ticket.title} maxLength={120} required autoFocus />
+            <div className="acoes">
+              <Botao onClick={() => setDialogo(null)}>Cancelar</Botao>
+              <Botao variante="primario" type="submit">Salvar alterações</Botao>
+            </div>
+          </form>
+        </Dialogo>
+      ) : null}
+
+      {dialogo?.tipo === "excluir-ticket" ? (
+        <Confirmar
+          aberto
+          titulo="Excluir ticket"
+          descricao={`Excluir "${dialogo.ticket.title}" apaga a conversa inteira. Não dá para desfazer.`}
+          rotuloConfirmar="Excluir ticket"
+          aoConfirmar={() => void excluirTicket()}
           aoFechar={() => setDialogo(null)}
         />
       ) : null}

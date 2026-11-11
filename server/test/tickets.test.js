@@ -3,9 +3,11 @@ import { after, before, test } from "node:test";
 import { criarApp } from "../src/app.js";
 import { tituloDaMensagem } from "../src/tickets.js";
 
-let base, servidor;
+let base, servidor, cookie = "";
 const chamar = async (metodo, caminho, corpo) => {
-  const r = await fetch(base + caminho, { method: metodo, headers: { "content-type": "application/json" }, body: corpo === undefined ? undefined : JSON.stringify(corpo) });
+  const r = await fetch(base + caminho, { method: metodo, headers: { "content-type": "application/json", cookie }, body: corpo === undefined ? undefined : JSON.stringify(corpo) });
+  const novo = r.headers.get("set-cookie");
+  if (novo) cookie = novo.split(";")[0];
   return { status: r.status, dados: r.status === 204 ? null : await r.json() };
 };
 const abrir = async (content, title) => (await chamar("POST", "/api/tickets", { content, title })).dados;

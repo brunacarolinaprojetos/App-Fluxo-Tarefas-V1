@@ -1,0 +1,135 @@
+# Atendimento por IA: o backend cria a issue (origin:app) e faz o dispatch explícito deste workflow.
+# O controlador e as instruções vêm sempre da branch padrão; título, corpo e respostas da IA são dados.
+name: ai-agents
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Número da issue do ticket
+        required: true
+        type: string
+      retomar:
+        description: Retomar uma execução em fase incerto/erro (pode gerar nova chamada paga)
+        type: boolean
+        default: false
+
+permissions: {}
+
+# Uma execução por issue de cada vez; a seguinte relê o estado e não repete etapas concluídas.
+concurrency:
+  group: ai-agents-issue-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+env:
+  ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+  AGENT_DRY_RUN: ${{ vars.AGENT_DRY_RUN || 'true' }}
+
+jobs:
+  coordenar:
+    if: >-
+      vars.AGENT_RUNTIME == 'github-actions' &&
+      (github.event_name == 'workflow_dispatch' || contains(github.event.issue.labels.*.name, 'origin:app'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      proposta: ${{ steps.publicar.outputs.proposta }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+
+      - id: preparar
+        name: Validar origem e montar entrada
+        run: node scripts/agentes/controlador.mjs preparar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_GITHUB_LOGIN: ${{ vars.APP_GITHUB_LOGIN }}
+          RETOMAR: ${{ inputs.retomar || 'false' }}
+
+      - id: ia
+        name: Chamar o coordenador (IA)
+        if: steps.preparar.outputs.seguir == 'true'
+        timeout-minutes: 7
+        run: node scripts/agentes/controlador.mjs chamar-ia
+        env:
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
+          AI_BASE_URL: ${{ vars.AI_BASE_URL }}
+          AI_MAX_CALLS: ${{ vars.AI_MAX_CALLS || '2' }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+
+      - id: publicar
+        name: Validar e publicar resultado
+        if: always() && steps.preparar.outputs.seguir == 'true'
+        run: node scripts/agentes/controlador.mjs publicar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.preparar.outputs.seguir == 'true'
+        with:
+          name: resultado-issue-${{ env.ISSUE_NUMBER }}
+          path: .agentes/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Aplica só as alterações já validadas e abre o PR. Não roda código gerado e não recebe a chave da IA.
+  propor-pr:
+    needs: coordenar
+    if: needs.coordenar.outputs.proposta == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      branch: ${{ steps.pr.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: resultado-issue-${{ env.ISSUE_NUMBER }}
+          path: .agentes/
+      - id: pr
+        run: node scripts/agentes/controlador.mjs abrir-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+
+  # Build da proposta isolado: sem segredos e só com leitura.
+  build-proposta:
+    needs: propor-pr
+    if: needs.propor-pr.outputs.branch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.propor-pr.outputs.branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm run build

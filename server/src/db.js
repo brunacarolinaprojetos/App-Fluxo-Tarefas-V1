@@ -82,6 +82,20 @@ const MIGRACOES = [
      ('msg-boas-vindas-2', 'ticket-boas-vindas', 'agent', 'Suporte Fluxo', 'Olá! O compartilhamento de quadros está chegando em breve. Por enquanto, todos que acessam este Fluxo enxergam os mesmos quadros, então sua equipe já consegue ver o "Sprint da semana" pelo mesmo endereço.
 
 Posso ajudar com mais alguma coisa?', '2026-11-10T09:06:00.000Z');`,
+  // Dono do ticket (cookie do cliente) e vínculo com a issue do GitHub usada pela automação.
+  // Tickets antigos ficam sem dono e continuam visíveis como antes.
+  `ALTER TABLE ticket ADD COLUMN dono TEXT;
+   CREATE INDEX ticket_por_dono ON ticket (dono);
+   CREATE TABLE ticket_github (
+     ticket_id TEXT PRIMARY KEY REFERENCES ticket(id) ON DELETE CASCADE,
+     issue_number INTEGER,
+     request_id TEXT NOT NULL,
+     fase TEXT NOT NULL,
+     run_id TEXT,
+     pr_url TEXT,
+     mensagens_enviadas TEXT NOT NULL DEFAULT '[]',
+     consultado_em TEXT
+   )`,
 ];
 
 /** `caminho` = arquivo do banco; `:memory:` nos testes. */

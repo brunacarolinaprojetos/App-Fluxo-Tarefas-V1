@@ -100,7 +100,11 @@ export function rotasDeTickets(app, db) {
     // Enquanto a tela está aberta, cada consulta sincroniza com a issue; `?sincronizar=1` (botão Atualizar) força na hora.
     const forcar = ctx.url.searchParams.get("sincronizar") === "1";
     try {
-      await reconciliar(db, t.id, { forcar, entregar: (publicText) => respostaDoAtendimento(t.id, "Suporte N1", publicText) });
+      // Texto do agente entra como "Suporte N1"; marcos automáticos entram como status (mensagem de sistema).
+      await reconciliar(db, t.id, {
+        forcar,
+        entregar: (texto, tipo) => (tipo === "status" ? gravarMensagem(t.id, "system", "", texto) : respostaDoAtendimento(t.id, "Suporte N1", texto)),
+      });
     } catch (e) {
       console.error(`[atendimento] reconciliação do ticket ${t.id} falhou: ${e.message}`);
     }

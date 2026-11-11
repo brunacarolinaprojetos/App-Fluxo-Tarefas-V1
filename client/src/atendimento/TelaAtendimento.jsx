@@ -204,12 +204,12 @@ export function TelaAtendimento({ ticketId, conversa, enviando, aoEnviar, aoReno
             <li className="msg msg-agente msg-aguardando">
               <span className="msg-avatar" aria-hidden="true"><Icone nome="conversa" tamanho={16} /></span>
               <div className="msg-corpo">
-                <p className="msg-autor">{ticket.tracking?.ativo ? "Suporte N1" : "Atendimento"}</p>
+                <p className="msg-autor">Atendimento</p>
                 <p className="msg-espera">
                   <span className="pontos" aria-hidden="true"><i /><i /><i /></span>
                   {ticket.tracking?.ativo
-                    ? "Acompanhando o andamento do seu pedido. Cada novidade aparece aqui assim que acontece."
-                    : "Recebemos sua mensagem. A resposta aparece aqui assim que alguém do atendimento responder."}
+                    ? "Pedido na fila do agente. A resposta dele aparece aqui assim que for escrita."
+                    : "Aguardando resposta do atendimento."}
                 </p>
               </div>
             </li>

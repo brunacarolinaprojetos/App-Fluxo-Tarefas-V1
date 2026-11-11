@@ -5,7 +5,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { AUTOR_CONTROLE, FASES_COM_RESPOSTA, LIMITES, ROTULO_ORIGEM, corpoDaIssue, lerControle, lerMensagensN1 } from "../../scripts/agentes/contrato.mjs";
+import { AUTOR_CONTROLE, FASES_COM_RESPOSTA, LIMITES, ROTULO_ORIGEM, corpoDaIssue, lerControle, lerMensagensPublicas } from "../../scripts/agentes/contrato.mjs";
 
 const executar = promisify(execFile);
 const INTERVALO_CONSULTA = 4_000; // tela aberta (o app consulta a cada 5 s): no máximo uma busca na issue por ciclo
@@ -111,19 +111,19 @@ export async function reconciliar(db, ticketId, { entregar, forcar = false }) {
     if (!estado || estado.ticketId !== ticketId || estado.requestId !== v.request_id) return;
 
     const enviadas = JSON.parse(v.mensagens_enviadas || "[]");
-    const novas = lerMensagensN1(comentarios).filter((m) => !enviadas.includes(m.id));
+    const novas = lerMensagensPublicas(comentarios).filter((m) => !enviadas.includes(m.id) && !enviadas.includes(m.id.replace(/^msg:/, "")));
     // Compatibilidade: estados antigos guardavam só a resposta final, sem comentário próprio.
     const final = estado.respostaFinal;
     if (FASES_COM_RESPOSTA.includes(estado.fase) && typeof final?.id === "string" && typeof final.texto === "string"
-      && !enviadas.includes(final.id) && !novas.some((m) => m.id === final.id)) {
-      novas.push({ id: final.id, texto: final.texto.trim().slice(0, LIMITES.publicText) });
+      && !enviadas.includes(final.id) && !enviadas.includes(`msg:${final.id}`) && !novas.some((m) => m.id === `msg:${final.id}`)) {
+      novas.push({ id: final.id, tipo: "n1", texto: final.texto.trim().slice(0, LIMITES.publicText) });
     }
     for (const m of novas) {
-      entregar(m.texto);
+      entregar(m.texto, m.tipo);
       enviadas.push(m.id);
     }
     // Encerra a sincronização quando a resposta final já chegou e o caso terminou.
-    const terminou = ["concluido", "integrado"].includes(estado.fase) && enviadas.includes(final?.id);
+    const terminou = ["concluido", "integrado"].includes(estado.fase) && (enviadas.includes(final?.id) || enviadas.includes(`msg:${final?.id}`));
     db.prepare("UPDATE ticket_github SET mensagens_enviadas = ?, fase = ?, run_id = ?, pr_url = ? WHERE ticket_id = ?")
       .run(JSON.stringify(enviadas), terminou ? "finalizado" : estado.fase, estado.runId ?? null, estado.prUrl ?? null, ticketId);
   } finally {

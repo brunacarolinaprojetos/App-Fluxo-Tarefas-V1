@@ -1,7 +1,7 @@
 // Contrato entre backend, controlador (GitHub Actions) e modelo de IA.
 // Tudo aqui roda FORA do modelo: é o que decide o que vale, o que é bloqueado e o que chega ao cliente.
 
-export const AGENTES = ["coordenador", "n1", "comercial", "po", "desenvolvedor", "revisor"];
+export const AGENTES = ["coordenador", "n1", "comercial", "po", "desenvolvedor", "revisor", "documentador"];
 export const OUTCOMES = ["code", "answered", "waiting-customer", "commercial", "human-review"];
 export const ROTULO_ORIGEM = "origin:app";
 export const MARCA_APP = "fluxo-app:v1";
@@ -17,21 +17,75 @@ export const MAX_RODADAS_CORRECAO = 1;
 export const idRespostaN1 = (requestId) => `n1-final-${requestId}`;
 export const marcaMensagem = (id) => `<!-- fluxo-msg:${id} -->`;
 export const CABECALHO_N1 = "**Suporte N1 → cliente**";
+/** Marcos do processo (PR aberto, verificação...): status do atendimento, nunca na voz do agente. */
+export const marcaStatus = (id) => `<!-- fluxo-status:${id} -->`;
+export const CABECALHO_STATUS = "**Andamento do atendimento (status automático)**";
 
 /**
- * Mensagens do N1 ao cliente publicadas na issue, na ordem em que foram escritas.
+ * Mensagens públicas da issue, na ordem em que foram escritas:
+ * `n1` = texto escrito pelo agente (modelo); `status` = marco automático do controlador.
  * Só valem as do workflow (github-actions[bot]) com o marcador; o texto volta sem a neutralização.
  */
-export function lerMensagensN1(comentarios = []) {
+export function lerMensagensPublicas(comentarios = []) {
   const saida = [];
   for (const c of comentarios) {
     if (c.user?.login !== AUTOR_CONTROLE) continue;
-    const m = /^<!-- fluxo-msg:([a-z0-9-]{1,120}) -->\n/.exec(c.body ?? "");
+    const m = /^<!-- fluxo-(msg|status):([a-z0-9-]{1,120}) -->\n/.exec(c.body ?? "");
     if (!m) continue;
-    const texto = c.body.slice(m[0].length).replace(CABECALHO_N1, "").replace(/​/g, "").replace(/&lt;!--/g, "<!--").trim().slice(0, LIMITES.publicText);
-    if (texto) saida.push({ id: m[1], texto });
+    const texto = c.body.slice(m[0].length).replace(CABECALHO_N1, "").replace(CABECALHO_STATUS, "")
+      .replace(/​/g, "").replace(/&lt;!--/g, "<!--").trim().slice(0, LIMITES.publicText);
+    if (texto) saida.push({ id: `${m[1]}:${m[2]}`, tipo: m[1] === "msg" ? "n1" : "status", texto });
   }
   return saida;
+}
+
+// ---------- base de conhecimento (docs/knowledge) ----------
+
+export const PASTA_CONHECIMENTO = "docs/knowledge";
+export const TIPOS_CONHECIMENTO = ["duvida-de-uso", "mudanca-de-codigo", "comercial", "esclarecimento", "pendencia"];
+/** Caminhos que os agentes podem LER da base de conhecimento (nunca escrever pelo fluxo de produto). */
+export const caminhoConhecimento = (p) => typeof p === "string" && /^docs\/knowledge\/[A-Za-z0-9_\-/]+\.md$/.test(p) && !p.includes("//");
+export const arquivoConhecimento = (issue) => `${PASTA_CONHECIMENTO}/atendimento/issue-${issue}.md`;
+
+/** Lê o frontmatter simples (uma chave por linha, valores em JSON) de um arquivo de conhecimento. */
+export function lerFrontmatter(md = "") {
+  const m = /^---\n([\s\S]*?)\n---/.exec(md.replace(/\r\n/g, "\n"));
+  if (!m) return null;
+  const dados = {};
+  for (const linha of m[1].split("\n")) {
+    const i = linha.indexOf(":");
+    if (i < 1) continue;
+    const valor = linha.slice(i + 1).trim();
+    try { dados[linha.slice(0, i).trim()] = JSON.parse(valor); } catch { dados[linha.slice(0, i).trim()] = valor; }
+  }
+  return dados;
+}
+
+/** Monta o arquivo de conhecimento de um atendimento a partir do estado validado (feito fora do modelo). */
+export function montarConhecimento({ estado, issue, situacao, hoje }) {
+  const c = estado.conhecimento;
+  const r = estado.relatorio ?? {};
+  const fm = {
+    id: `issue-${issue.number}`,
+    titulo: c.titulo,
+    tipo: c.tipo,
+    status: situacao,
+    issue: issue.number,
+    pr: estado.prUrl ?? null,
+    request_id: estado.requestId,
+    tags: c.tags,
+    arquivos: r.allowedFiles ?? [],
+    fonte: "agentes (coordenador + documentador), validado pelo controlador",
+    criado_em: estado.conhecimentoCriadoEm ?? hoje,
+    atualizado_em: hoje,
+  };
+  const linhas = ["---", ...Object.entries(fm).map(([k, v]) => `${k}: ${JSON.stringify(v)}`), "---", "", `# ${c.titulo}`, "",
+    "## Pedido", "", c.resumoPedido, "", "## Solução", "", c.solucao, ""];
+  if (r.criteria?.length) linhas.push("## Critério de aceite", "", ...r.criteria.map((x) => `- \`${x.id}\`: ${x.description}`), "");
+  if (r.allowedFiles?.length) linhas.push("## Arquivos envolvidos", "", ...r.allowedFiles.map((f) => `- \`${f}\``), "");
+  linhas.push("## Como reutilizar", "", c.comoReutilizar, "", "## Rastreabilidade", "",
+    `- Issue: #${issue.number} (${issue.html_url ?? ""})`, `- PR: ${estado.prUrl ?? "não houve"}`, `- Situação: ${situacao}`, "");
+  return neutralizar(linhas.join("\n")).replace(/&lt;!--/g, "<!--");
 }
 /** Resposta depois do merge: integrado no código, mas o app local de cada pessoa ainda precisa ser atualizado. */
 export const respostaIntegrada = (publicText) =>
@@ -55,7 +109,7 @@ const ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const ESQUEMA_RESPOSTA = {
   type: "object",
   additionalProperties: false,
-  required: ["outcome", "publicText", "agents", "allowedFiles", "criteria", "updates", "arquivosParaLer", "alteracoes"],
+  required: ["outcome", "publicText", "agents", "allowedFiles", "criteria", "updates", "arquivosParaLer", "alteracoes", "conhecimento"],
   properties: {
     outcome: { type: "string", enum: OUTCOMES },
     publicText: { type: "string" },
@@ -76,6 +130,15 @@ export const ESQUEMA_RESPOSTA = {
     alteracoes: {
       type: "array",
       items: { type: "object", additionalProperties: false, required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string" } } },
+    },
+    // Escrito pelo documentador: vira o arquivo docs/knowledge/atendimento/issue-N.md.
+    conhecimento: {
+      type: "object", additionalProperties: false,
+      required: ["titulo", "tipo", "tags", "resumoPedido", "solucao", "comoReutilizar"],
+      properties: {
+        titulo: { type: "string" }, tipo: { type: "string", enum: TIPOS_CONHECIMENTO }, tags: { type: "array", items: { type: "string" } },
+        resumoPedido: { type: "string" }, solucao: { type: "string" }, comoReutilizar: { type: "string" },
+      },
     },
   },
 };
@@ -120,26 +183,41 @@ export function validarRelatorio(bruto) {
   } else if (allowedFiles.length || criteria.length || alteracoes.length) {
     erros.push(`${outcome} não pode ter allowedFiles, criteria ou alteracoes`);
   }
-  const textosPublicos = [publicText, ...updates.map((u) => u.publicText), ...updates.map((u) => u.internalText)];
-  if (textosPublicos.some((t) => PARECE_SEGREDO.test(t))) erros.push("texto parece conter credencial");
+  // Conhecimento do documentador: curto, objetivo e sem credenciais. Vira arquivo em docs/knowledge.
+  const k = bruto.conhecimento ?? {};
+  const conhecimento = {
+    titulo: texto(k.titulo, 120), tipo: k.tipo,
+    tags: [...new Set((Array.isArray(k.tags) ? k.tags : []).map((t) => texto(t, 30).toLowerCase().replace(/[^a-z0-9à-ú-]+/g, "-")).filter(Boolean))].slice(0, 8),
+    resumoPedido: texto(k.resumoPedido, 1500), solucao: texto(k.solucao, 4000), comoReutilizar: texto(k.comoReutilizar, 1500),
+  };
+  if (!conhecimento.titulo || !conhecimento.resumoPedido || !conhecimento.solucao) erros.push("conhecimento incompleto (titulo, resumoPedido e solucao)");
+  if (!TIPOS_CONHECIMENTO.includes(conhecimento.tipo)) erros.push(`tipo de conhecimento inválido: ${String(k.tipo).slice(0, 40)}`);
+
+  const textosPublicos = [publicText, ...updates.map((u) => u.publicText), ...updates.map((u) => u.internalText), ...Object.values(conhecimento).flat()];
+  if (textosPublicos.some((t) => PARECE_SEGREDO.test(String(t)))) erros.push("texto parece conter credencial");
 
   const relatorio = { outcome, publicText, agents, allowedFiles: outcome === "code" ? allowedFiles : [], criteria: outcome === "code" ? criteria : [], updates };
-  return { ok: erros.length === 0, erros, relatorio, alteracoes: outcome === "code" ? alteracoes : [] };
+  return { ok: erros.length === 0, erros, relatorio, conhecimento, alteracoes: outcome === "code" ? alteracoes : [] };
 }
 
 /** Resultado fictício do coordenador para o dry-run: não chama a IA. */
 export function simularResultado(entrada) {
   return {
     outcome: "answered",
-    publicText: "Obrigado pela mensagem! Esta é uma resposta de ensaio (modo de demonstração, sem IA). No atendimento real, a resposta completa ao seu pedido apareceria aqui.",
-    agents: ["coordenador", "n1"],
+    // No ensaio nenhum agente analisa o pedido, e a mensagem diz isso com todas as letras.
+    publicText: "[Modo de ensaio] Nenhum agente de IA analisou este pedido: o atendimento está em simulação (AGENT_DRY_RUN=true). Com a IA ligada, a resposta do agente aparece aqui.",
+    agents: ["coordenador"],
     allowedFiles: [],
     criteria: [],
     updates: [
-      { id: "u1-entendido", agent: "n1", internalText: `[dry-run] Pedido ${entrada.requestId} lido; nenhuma chamada à IA foi feita.`, publicText: "Li o seu pedido e já entendi o que você precisa. Estou preparando a resposta." },
+      { id: "u1-simulado", agent: "coordenador", internalText: `[dry-run] Pedido ${entrada.requestId} não foi analisado; nenhuma chamada à IA foi feita.`, publicText: "" },
     ],
     arquivosParaLer: [],
     alteracoes: [],
+    conhecimento: {
+      titulo: "Ensaio sem IA", tipo: "pendencia", tags: ["ensaio"],
+      resumoPedido: "Simulação do fluxo, sem análise.", solucao: "Nenhuma: resultado simulado (não é gravado na base).", comoReutilizar: "Não reutilizar.",
+    },
   };
 }
 

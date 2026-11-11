@@ -11,7 +11,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname, join } from "node:path";
 import {
   AGENTES, AUTOR_CONTROLE, ESQUEMA_RESPOSTA, FASES_SEM_REPETICAO, LIMITES, MAX_RODADAS_CORRECAO, caminhoPermitido, conferirAceite,
-  CABECALHO_N1, formatarControle, idRespostaN1, lerControle, marcaMensagem, neutralizar, prefixoBranch, respostaIntegrada, simularResultado,
+  CABECALHO_N1, CABECALHO_STATUS, PASTA_CONHECIMENTO, arquivoConhecimento, caminhoConhecimento, formatarControle, idRespostaN1, lerControle, lerFrontmatter, marcaStatus, montarConhecimento, marcaMensagem, neutralizar, prefixoBranch, respostaIntegrada, simularResultado,
   validarOrigem, validarRelatorio,
 } from "./contrato.mjs";
 
@@ -62,17 +62,35 @@ async function publicarN1(id, texto) {
   if (lista.some((c) => c.user?.login === AUTOR_CONTROLE && c.body?.startsWith(marcaMensagem(id)))) { console.log(`Mensagem ${id} já publicada.`); return; }
   await comentarNaIssue(`${marcaMensagem(id)}\n${CABECALHO_N1}\n\n${neutralizar(texto)}`);
 }
-/** Marcos do andamento que o N1 comunica ao cliente (textos curtos, sem detalhes internos). */
+/**
+ * Marco automático do processo (não é fala de agente): aparece no chat como linha de status.
+ * A voz do N1 fica reservada para o que o agente realmente escreveu.
+ */
+async function publicarStatus(id, texto) {
+  const lista = await comentarios();
+  if (lista.some((c) => c.user?.login === AUTOR_CONTROLE && c.body?.startsWith(marcaStatus(id)))) return;
+  await comentarNaIssue(`${marcaStatus(id)}\n${CABECALHO_STATUS}\n\n${texto}`);
+}
 const AVISOS = {
-  recebido: "Recebemos seu pedido e ele já está com a nossa equipe de atendimento. Vou te avisando por aqui conforme as coisas andam.",
-  analise: "Seu pedido precisa de uma análise da nossa equipe antes de seguir. Assim que houver novidade, aviso aqui.",
-  prAberto: "Preparamos uma alteração para atender ao seu pedido. Agora ela passa por revisão e por uma verificação automática.",
-  correcaoEnviada: "A correção foi aplicada e a alteração está sendo verificada de novo.",
-  validado: "A alteração passou na verificação automática e agora aguarda a integração pela equipe.",
-  corrigindo: "A verificação automática encontrou um problema na alteração. Já estamos corrigindo.",
-  pendente: "A alteração precisa de uma análise da nossa equipe antes de seguir. Aviso aqui assim que houver novidade.",
+  analise: "Status: o pedido foi encaminhado para análise da equipe.",
+  prAberto: "Status: alteração proposta (PR aberto), em revisão e verificação automática.",
+  correcaoEnviada: "Status: correção aplicada no mesmo PR, nova verificação em andamento.",
+  validado: "Status: a alteração passou na verificação automática e aguarda integração.",
+  corrigindo: "Status: a verificação automática falhou; correção em andamento.",
+  pendente: "Status: o caso aguarda decisão da equipe.",
 };
 const fecharIssue = () => github("PATCH", `/repos/${REPO}/issues/${ISSUE}`, { state: "closed", state_reason: "completed" });
+
+// ---------- base de conhecimento ----------
+
+/** Índice da base (só o frontmatter): os agentes consultam e pedem para ler o que for relevante. */
+export function indiceConhecimento() {
+  const arquivos = execFileSync("git", ["ls-files", PASTA_CONHECIMENTO], { encoding: "utf8" }).split("\n").filter(caminhoConhecimento);
+  return arquivos.map((path) => {
+    const fm = lerFrontmatter(readFileSync(path, "utf8")) ?? {};
+    return { path, titulo: fm.titulo ?? null, tipo: fm.tipo ?? null, status: fm.status ?? null, tags: fm.tags ?? [], arquivos: fm.arquivos ?? [] };
+  });
+}
 
 // ---------- preparar ----------
 
@@ -89,7 +107,7 @@ async function preparar() {
   }
   const retomar = env.RETOMAR === "true";
   const arquivosProduto = execFileSync("git", ["ls-files", "client/src", "server/src"], { encoding: "utf8" }).split("\n").filter(caminhoPermitido);
-  const base = { requestId: origem.requestId, issue: ISSUE, ticketId: origem.ticketId, titulo: issue.title, pedido: origem.conteudo, arquivosProduto };
+  const base = { requestId: origem.requestId, issue: ISSUE, ticketId: origem.ticketId, titulo: issue.title, pedido: origem.conteudo, arquivosProduto, baseConhecimento: indiceConhecimento() };
 
   // Rodada de correção no MESMO PR: pedida pelo registrar-build, ou autorizada pelo instrutor (retomar=true).
   if (anterior?.fase === "corrigindo" || (anterior?.fase === "pendente-instrutor" && anterior.branch && retomar)) {
@@ -119,7 +137,6 @@ async function preparar() {
     resultPath, prUrl: null, chamadasIA: anterior?.chamadasIA ?? 0, rodadasCorrecao: 0, correcao: false, resumoComentarioId: null,
   });
   gravarJson(ARQ.entrada, { ...base, resultPath });
-  await publicarN1(`n1-${origem.requestId}-recebido`, AVISOS.recebido);
   console.log(`Entrada do coordenador montada para ${origem.requestId}.`);
   saida("seguir", "true");
 }
@@ -136,7 +153,9 @@ export function montarInstrucoes() {
     "# Runtime: GitHub Actions (controlador do App Fluxo)",
     "Aqui não existem a ferramenta Agent, nem shell, nem acesso a arquivos. Aplique em sequência as instruções de cada especialista abaixo, a partir do coordenador, e registre a contribuição de cada um em `updates` (com `agent` igual ao nome do especialista).",
     "Responda somente com o JSON do esquema. O controlador grava o relatório, abre o PR, aguarda o build e publica a resposta; você não faz isso.",
-    "Pedido de código: na primeira resposta, liste em `arquivosParaLer` até 5 arquivos de `arquivosProduto` e deixe `alteracoes` vazio. O controlador devolve o conteúdo deles, e aí você responde com `alteracoes`, trazendo o conteúdo COMPLETO de cada arquivo alterado (só arquivos listados em allowedFiles).",
+    "Base de conhecimento: a entrada traz `baseConhecimento` (índice de docs/knowledge com título, tipo, tags e arquivos de cada atendimento anterior). ANTES de responder ou de mexer em código, veja se há entrada relacionada. Se houver, peça a leitura dela em `arquivosParaLer`, junto com os arquivos de produto necessários.",
+    "Leitura em duas etapas: na primeira resposta, liste em `arquivosParaLer` até 5 caminhos (de `arquivosProduto` ou `baseConhecimento`) e deixe `alteracoes` vazio. O controlador devolve o conteúdo e você responde de novo com o resultado final. Pedido de código: a resposta final traz `alteracoes` com o conteúdo COMPLETO de cada arquivo alterado (só arquivos de allowedFiles). Se não precisar ler nada, responda direto com `arquivosParaLer` vazio.",
+    "Conhecimento: o documentador preenche `conhecimento` (título, tipo, tags, resumo do pedido, solução e como reutilizar) com fatos verificados neste atendimento. Ele vira um arquivo em docs/knowledge para os próximos atendimentos.",
     "Correção: se a entrada trouxer `correcao`, é uma correção no MESMO PR. Use `correcao.erro` e `correcao.arquivosAtuais` (conteúdo atual da branch) e devolva outcome `code` com as alterações completas, sem reiniciar o trabalho.",
     "Conferência: o desenvolvedor não consegue abrir o app neste runtime; diga isso no update dele (o build roda depois, fora do modelo). O revisor registra em UMA frase, num update com agent `revisor`, se o diff atende ao critério.",
     "`publicText` é a mensagem curta do N1 ao cliente: português simples, sem detalhes internos, sem prometer prazo, preço ou entrega. Não diga que algo já foi integrado: quem confirma isso é o controlador.",
@@ -171,17 +190,20 @@ async function chamarProvedor(entrada) {
       ...fallback,
     });
     if (resp.stop_reason === "refusal" || resp.stop_reason === "max_tokens") {
-      return { chamadas, relatorio: { outcome: "human-review", publicText: "Recebemos seu pedido e ele vai ser analisado pela nossa equipe.", agents: ["coordenador"], allowedFiles: [], criteria: [], updates: [{ id: "u-parada", agent: "coordenador", internalText: `Modelo parou com stop_reason=${resp.stop_reason}.`, publicText: "Seu pedido está em análise." }], arquivosParaLer: [], alteracoes: [] } };
+      return { chamadas, relatorio: { outcome: "human-review", publicText: "Seu pedido vai precisar de uma análise da nossa equipe. Aviso por aqui assim que houver resposta.", agents: ["coordenador"], allowedFiles: [], criteria: [], updates: [{ id: "u-parada", agent: "coordenador", internalText: `Modelo parou com stop_reason=${resp.stop_reason}.`, publicText: "" }], arquivosParaLer: [], alteracoes: [], conhecimento: { titulo: "Pedido encaminhado para análise humana", tipo: "pendencia", tags: ["analise-humana"], resumoPedido: "O modelo não concluiu a análise.", solucao: "Aguardando a equipe.", comoReutilizar: "Não reutilizar até a equipe concluir." } } };
     }
     const textoResp = resp.content.find((b) => b.type === "text")?.text ?? "";
     const r = JSON.parse(textoResp);
-    const pedirArquivos = r.outcome === "code" && !r.alteracoes?.length && r.arquivosParaLer?.length && chamadas < MAX_CHAMADAS;
+    // Qualquer outcome pode pedir leitura (código ou conhecimento) antes de dar a resposta final.
+    const pedirArquivos = !r.alteracoes?.length && r.arquivosParaLer?.length && chamadas < MAX_CHAMADAS;
     if (!pedirArquivos) return { chamadas, relatorio: r };
-    // Leitura limitada, validada fora do modelo: só fontes de produto existentes.
-    const arquivos = r.arquivosParaLer.filter((p) => caminhoPermitido(p) && entrada.arquivosProduto.includes(p)).slice(0, LIMITES.arquivos)
-      .map((p) => ({ path: p, content: readFileSync(p, "utf8") }));
+    // Leitura limitada, validada fora do modelo: fontes de produto ou entradas da base de conhecimento existentes.
+    const conhecidos = new Set((entrada.baseConhecimento ?? []).map((k) => k.path));
+    const arquivos = r.arquivosParaLer
+      .filter((p) => (caminhoPermitido(p) && entrada.arquivosProduto.includes(p)) || (caminhoConhecimento(p) && conhecidos.has(p)))
+      .slice(0, LIMITES.arquivos).map((p) => ({ path: p, content: readFileSync(p, "utf8") }));
     mensagens.push({ role: "assistant", content: resp.content });
-    mensagens.push({ role: "user", content: `Conteúdo dos arquivos pedidos (JSON):\n${JSON.stringify(arquivos)}\n\nAgora devolva o relatório final com as alteracoes.` });
+    mensagens.push({ role: "user", content: `Conteúdo dos arquivos pedidos (JSON):\n${JSON.stringify(arquivos)}\n\nAgora devolva o relatório final (com \`arquivosParaLer\` vazio).` });
   }
   throw new Error(`Limite de ${MAX_CHAMADAS} chamadas atingido sem relatório final.`);
 }
@@ -237,7 +259,7 @@ async function publicar() {
     const motivo = v.ok ? "a correção não trouxe código" : `resultado rejeitado pela validação: ${v.erros.slice(0, 5).join("; ")}`;
     await salvarControle(controle, { ...estado, fase: estado.correcao ? "pendente-instrutor" : "revisao-humana", chamadasIA, erro: motivo });
     if (estado.correcao) await comentarNaIssue(`**Pendência para o instrutor** (request \`${estado.requestId}\`): ${neutralizar(motivo)}. O PR continua aberto: ${estado.prUrl}`);
-    await publicarN1(`n1-${estado.requestId}-${estado.correcao ? "pendente" : "analise"}`, estado.correcao ? AVISOS.pendente : AVISOS.analise);
+    await publicarStatus(`st-${estado.requestId}-${estado.correcao ? "pendente" : "analise"}`, estado.correcao ? AVISOS.pendente : AVISOS.analise);
     return saida("proposta", "false");
   }
   gravarJson(estado.resultPath, { requestId: entrada.requestId, ...v.relatorio });
@@ -252,14 +274,14 @@ async function publicar() {
     gravarJson(ARQ.proposta, { requestId: entrada.requestId, issue: ISSUE, alteracoes: v.alteracoes, allowedFiles: v.relatorio.allowedFiles });
     // Na correção, os arquivos permitidos continuam os do pedido original.
     const relatorio = estado.correcao ? { ...v.relatorio, allowedFiles: estado.relatorio.allowedFiles, criteria: estado.relatorio.criteria } : v.relatorio;
-    await salvarControle(controle, { ...estado, fase: "proposta-pronta", chamadasIA, dryRun: res.dryRun, resumoComentarioId, erro: null, relatorio });
+    await salvarControle(controle, { ...estado, fase: "proposta-pronta", chamadasIA, dryRun: res.dryRun, resumoComentarioId, erro: null, relatorio, conhecimento: res.dryRun ? null : v.conhecimento });
     return saida("proposta", "true");
   }
   // Sem código: dúvida de uso é respondida e fechada; esclarecimento pendente mantém o caso aberto.
   const id = idRespostaN1(estado.requestId);
   const fase = v.relatorio.outcome === "waiting-customer" ? "aguardando-cliente" : "concluido";
   await salvarControle(controle, {
-    ...estado, fase, chamadasIA, dryRun: res.dryRun, resumoComentarioId, erro: null, relatorio: v.relatorio,
+    ...estado, fase, chamadasIA, dryRun: res.dryRun, resumoComentarioId, erro: null, relatorio: v.relatorio, conhecimento: res.dryRun ? null : v.conhecimento,
     respostaFinal: { id, texto: v.relatorio.publicText },
   });
   await publicarN1(id, v.relatorio.publicText);
@@ -308,7 +330,7 @@ async function abrirPr() {
     prUrl = pr.html_url;
   }
   await salvarControle(controle, { ...estado, fase: "pr-aberto", prUrl, branch, correcao: false });
-  await publicarN1(estado.correcao ? `n1-${estado.requestId}-correcao-${estado.rodadasCorrecao ?? 1}` : `n1-${estado.requestId}-pr`, estado.correcao ? AVISOS.correcaoEnviada : AVISOS.prAberto);
+  await publicarStatus(estado.correcao ? `st-${estado.requestId}-correcao-${estado.rodadasCorrecao ?? 1}` : `st-${estado.requestId}-pr`, estado.correcao ? AVISOS.correcaoEnviada : AVISOS.prAberto);
   saida("branch", branch);
   saida("sha", git("rev-parse", "HEAD"));
 }
@@ -330,14 +352,14 @@ async function registrarBuild() {
     let atual = await salvarControle(controle, { ...estado, fase: "codigo-validado", build, aceite });
     await comentarNaIssue(`Build \`npm ci\` + \`npm run build\` + \`npm test\` do commit \`${build.sha.slice(0, 7)}\`: **ok**. Aceite conferido (origem do PR, requestId, caminhos de produto e build do commit atual).`);
     if (env.AUTO_MERGE !== "true") {
-      await publicarN1(`n1-${estado.requestId}-validado-${build.sha.slice(0, 7)}`, AVISOS.validado);
+      await publicarStatus(`st-${estado.requestId}-validado-${build.sha.slice(0, 7)}`, AVISOS.validado);
       console.log("AUTO_MERGE=false: PR fica disponível para a demonstração."); return;
     }
     // Merge do commit conferido (sha), pelas regras normais da branch: sem bypass.
     const m = await github("PUT", `/repos/${REPO}/pulls/${numeroPr}/merge`, { sha: build.sha, merge_method: "squash" }, { aceitar: [403, 405, 409, 422] });
     if (m?.erroStatus) {
       await comentarNaIssue(`Merge automático não permitido pelas regras do repositório (HTTP ${m.erroStatus}). O PR fica aberto para decisão do instrutor.`);
-      await publicarN1(`n1-${estado.requestId}-validado-${build.sha.slice(0, 7)}`, AVISOS.validado);
+      await publicarStatus(`st-${estado.requestId}-validado-${build.sha.slice(0, 7)}`, AVISOS.validado);
       return;
     }
     atual = { id: atual.id, estado: { ...atual.estado, fase: "codigo-validado" } };
@@ -349,12 +371,12 @@ async function registrarBuild() {
   if (rodadas >= MAX_RODADAS_CORRECAO) {
     await salvarControle(controle, { ...estado, fase: "pendente-instrutor", build, aceite, falha: erro });
     await comentarNaIssue(`**Pendência para o instrutor** (request \`${estado.requestId}\`): a correção automática já foi usada e o aceite continua falhando: ${neutralizar(erro)}. PR: ${estado.prUrl}. Para mais uma rodada, rode o workflow com \`retomar=true\`.`);
-    await publicarN1(`n1-${estado.requestId}-pendente`, AVISOS.pendente);
+    await publicarStatus(`st-${estado.requestId}-pendente`, AVISOS.pendente);
     return;
   }
   // Uma rodada automática: pede a correção no MESMO PR, com o erro curto e o requestId.
   await salvarControle(controle, { ...estado, fase: "corrigindo", build, aceite, falha: erro, rodadasCorrecao: rodadas + 1 });
-  await publicarN1(`n1-${estado.requestId}-corrigindo-${rodadas + 1}`, AVISOS.corrigindo);
+  await publicarStatus(`st-${estado.requestId}-corrigindo-${rodadas + 1}`, AVISOS.corrigindo);
   await github("POST", `/repos/${REPO}/issues/${numeroPr}/comments`, { body: `Correção automática solicitada (request \`${estado.requestId}\`, rodada ${rodadas + 1}/${MAX_RODADAS_CORRECAO}): ${neutralizar(erro)}` });
   await github("POST", `/repos/${REPO}/actions/workflows/${env.AGENT_WORKFLOW ?? "ai-agents.yml"}/dispatches`, { ref: BASE, inputs: { issue_number: String(ISSUE) } });
   console.log("Correção solicitada no mesmo PR.");
@@ -371,7 +393,7 @@ async function entregarDepoisDoMerge({ id, estado }) {
     if (pr.head.sha !== estado.build?.sha) {
       await salvarControle(atual, { ...estado, fase: "pendente-instrutor", erro: "O merge incluiu um commit diferente do conferido." });
       await comentarNaIssue("**Pendência para o instrutor:** o PR foi integrado com um commit diferente do que passou no build. Confira antes de responder ao cliente.");
-      await publicarN1(`n1-${estado.requestId}-pendente`, AVISOS.pendente);
+      await publicarStatus(`st-${estado.requestId}-pendente`, AVISOS.pendente);
       return;
     }
     const cmp = await github("GET", `/repos/${REPO}/compare/${pr.merge_commit_sha}...${BASE}`);
@@ -399,7 +421,52 @@ async function entregar() {
   await entregarDepoisDoMerge(controle);
 }
 
-const comandos = { preparar, "chamar-ia": chamarIa, publicar, "abrir-pr": abrirPr, "registrar-build": registrarBuild, entregar };
+// ---------- registrar-conhecimento ----------
+
+/** Situação do atendimento como aparece no conhecimento; null = ainda não é hora de registrar. */
+function situacaoDoAtendimento(estado, issue) {
+  if (["integrado", "merge-confirmado"].includes(estado.fase)) return "integrado";
+  if (["proposta-pronta", "pr-aberto", "corrigindo", "codigo-validado"].includes(estado.fase)) return "pr-aberto";
+  if (estado.fase === "pendente-instrutor" && estado.prUrl) return "pr-pendente";
+  if (issue.state === "closed") return estado.fase === "concluido" ? "resolvido" : "encerrado";
+  return null;
+}
+
+/**
+ * Toda issue fechada e todo PR gerado viram (ou atualizam) docs/knowledge/atendimento/issue-N.md na branch padrão.
+ * O conteúdo vem do documentador, já validado em `publicar`; o arquivo é montado aqui, fora do modelo.
+ * Ensaios (dry-run) não geram conhecimento: não houve análise de agente.
+ */
+async function registrarConhecimento() {
+  if (!ISSUE) { console.log("Sem issue associada."); return; }
+  const estado = lerControle(await comentarios())?.estado;
+  if (!estado?.conhecimento) { console.log("Sem conhecimento validado para registrar (ensaio ou atendimento sem análise)."); return; }
+  const issue = await github("GET", `/repos/${REPO}/issues/${ISSUE}`);
+  const situacao = situacaoDoAtendimento(estado, issue);
+  if (!situacao) { console.log(`Issue aberta e sem PR (fase ${estado.fase}): o conhecimento é registrado ao fechar ou ao gerar PR.`); return; }
+
+  const caminho = arquivoConhecimento(ISSUE);
+  const anterior = existsSync(caminho) ? readFileSync(caminho, "utf8") : null;
+  const hoje = agora().slice(0, 10);
+  const md = montarConhecimento({ estado: { ...estado, conhecimentoCriadoEm: lerFrontmatter(anterior ?? "")?.criado_em }, issue, situacao, hoje });
+  const semData = (t) => (t ?? "").replace(/\r\n/g, "\n").replace(/^atualizado_em: .*$/m, "");
+  if (anterior && semData(anterior) === semData(md)) { console.log(`Conhecimento da issue ${ISSUE} já está atualizado.`); return; }
+
+  mkdirSync(dirname(caminho), { recursive: true });
+  writeFileSync(caminho, md);
+  const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+  git("add", "--", caminho);
+  git("-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+    "commit", "-m", `Conhecimento: atendimento da issue ${ISSUE} (${situacao})`);
+  try { git("push", "origin", `HEAD:${BASE}`); } catch {
+    // Outro registro entrou antes: rebase só deste commit e uma nova tentativa.
+    git("pull", "--rebase", "origin", BASE);
+    git("push", "origin", `HEAD:${BASE}`);
+  }
+  console.log(`Conhecimento registrado em ${caminho} (${situacao}).`);
+}
+
+const comandos = { preparar, "chamar-ia": chamarIa, publicar, "abrir-pr": abrirPr, "registrar-build": registrarBuild, entregar, "registrar-conhecimento": registrarConhecimento };
 const comando = process.argv[2];
 if (comandos[comando]) {
   comandos[comando]().catch((e) => { console.error(`Falha em ${comando}: ${curto(e.message)}`); process.exitCode = 1; });

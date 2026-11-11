@@ -7,8 +7,12 @@ export const ROTULO_ORIGEM = "origin:app";
 export const MARCA_APP = "fluxo-app:v1";
 export const MARCA_CONTROLE = "fluxo-controle:v1";
 export const AUTOR_CONTROLE = "github-actions[bot]";
-/** Fases em que não há mais trabalho a fazer pela IA. */
-export const FASES_FINAIS = ["concluido", "pr-aberto"];
+/** Fases finais: só nelas o N1 fala com o cliente. Código só conta depois do build validado. */
+export const FASES_FINAIS = ["concluido", "codigo-validado"];
+/** Fases em que uma nova execução não deve repetir trabalho (sem `retomar`). */
+export const FASES_SEM_REPETICAO = [...FASES_FINAIS, "proposta-pronta", "pr-aberto"];
+/** Prefixo da branch do PR: amarra o PR à issue e ao requestId. */
+export const prefixoBranch = (issue, requestId) => `ai/issue-${issue}-${requestId.slice(0, 8)}`;
 export const LIMITES = { publicText: 2000, internalText: 4000, updates: 20, arquivos: 5, bytesArquivo: 200_000 };
 
 // Fluxo de produto só mexe em fontes da interface e da API, nunca em login, banco, integração ou atendimento.
@@ -112,6 +116,25 @@ export function simularResultado(entrada) {
     arquivosParaLer: [],
     alteracoes: [],
   };
+}
+
+/**
+ * Aceite de código (versão didática): origem do PR, requestId, caminhos de produto e build do commit atual.
+ * Não exige teste novo nem prova independente; o critério {id, description} já veio validado no relatório.
+ */
+export function conferirAceite({ estado, pr, arquivos, build }) {
+  const motivos = [];
+  if (pr?.user?.login !== AUTOR_CONTROLE) motivos.push("PR não foi aberto pelo workflow");
+  if (!pr?.head?.ref?.startsWith(prefixoBranch(estado.issue, estado.requestId))) motivos.push("branch do PR não corresponde ao requestId");
+  if (pr?.html_url !== estado.prUrl) motivos.push("PR diferente do registrado no estado");
+  const permitidos = estado.relatorio?.allowedFiles ?? [];
+  for (const a of arquivos ?? []) {
+    if (!caminhoPermitido(a.filename) || !permitidos.includes(a.filename)) motivos.push(`arquivo fora do escopo: ${a.filename}`);
+  }
+  if (!arquivos?.length) motivos.push("PR sem arquivos alterados");
+  if (build?.resultado !== "success") motivos.push(`build ${build?.resultado ?? "não executado"}`);
+  if (build?.sha !== pr?.head?.sha) motivos.push("build não é do commit atual do PR");
+  return { ok: motivos.length === 0, motivos };
 }
 
 // ---------- marcadores na issue ----------

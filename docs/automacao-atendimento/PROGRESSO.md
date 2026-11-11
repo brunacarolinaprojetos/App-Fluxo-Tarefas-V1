@@ -76,6 +76,16 @@ Como a conta não tem Copilot pago, os agentes vão usar o **Claude** (Claude Co
 - **Execuções:** o run do dispatch processou em dry-run e publicou o controle e o resumo interno. O run do evento `issues` viu "Já processado" e não repetiu nada. Os dois terminaram com sucesso.
 - A mensagem do N1 apareceu no app e o ticket foi para "Em atendimento".
 
+## Etapa 04 — Validar código e regressão (2026-11-11)
+
+- **Exigências antigas:** nenhuma. A `main` não tem proteção de branch nem rulesets, então nada foi removido nem contornado.
+- **CI reaproveitado:** o job `build-proposta` roda no commit exato do PR, sem segredos e só com leitura: `npm ci` (lockfile), `npm run build` e `npm test` (os testes que já existiam). Um `ci.yml` separado não rodaria, porque o PR é aberto com `GITHUB_TOKEN` e esse evento não dispara outros workflows.
+- **Aceite:** o job `registrar-build` usa o controlador da `main`, sem executar o candidato, e confere a origem do PR (`github-actions[bot]` + branch `ai/issue-N-<requestId>`), o requestId, os caminhos de produto permitidos e o build do commit atual. O critério continua `{id, description}`, sem exigir teste novo.
+  - Se o aceite passar: fase `codigo-validado` (só então o N1 avisa o cliente).
+  - Se falhar: fase `build-falhou`. Com `retomar=true`, a falha volta ao Desenvolvedor na entrada da nova rodada.
+- **Revisor:** registra em uma frase se o diff atende, e essa frase entra no corpo do PR. A conferência no app não roda no Actions; o PR diz isso e pede para abrir o app uma vez.
+- **Executado localmente:** `npm test` (27/27), `npm run build` (ok), a regressão da Etapa 03 (11 OK) e o `registrar-build` contra o GitHub falso: build ok virou `codigo-validado` e build com falha virou `build-falhou`.
+
 ### Pendência
 
 Para sair do dry-run: cadastrar o secret `AI_API_KEY` (chave da Anthropic) e mudar `AGENT_DRY_RUN` para `false`.

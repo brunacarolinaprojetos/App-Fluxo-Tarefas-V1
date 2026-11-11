@@ -98,6 +98,7 @@ jobs:
       issues: write
     outputs:
       branch: ${{ steps.pr.outputs.branch }}
+      sha: ${{ steps.pr.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,7 +116,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
 
-  # Build da proposta isolado: sem segredos e só com leitura.
+  # Verificação mínima da aula, no commit exato do PR: instalação pelo lockfile, build e testes existentes.
+  # Isolado: sem segredos e só com leitura.
   build-proposta:
     needs: propor-pr
     if: needs.propor-pr.outputs.branch != ''
@@ -126,10 +128,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.propor-pr.outputs.branch }}
+          ref: ${{ needs.propor-pr.outputs.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: npm ci --ignore-scripts
       - run: npm run build
+      - run: npm test
+
+  # Registra o resultado na issue e confere o aceite (origem do PR, requestId, caminhos, build do commit).
+  # Usa o controlador da branch padrão; não executa o código candidato.
+  registrar-build:
+    needs: [propor-pr, build-proposta]
+    if: always() && needs.propor-pr.outputs.branch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/agentes/controlador.mjs registrar-build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_RESULT: ${{ needs.build-proposta.result }}
+          BUILD_SHA: ${{ needs.propor-pr.outputs.sha }}

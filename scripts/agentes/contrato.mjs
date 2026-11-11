@@ -7,10 +7,18 @@ export const ROTULO_ORIGEM = "origin:app";
 export const MARCA_APP = "fluxo-app:v1";
 export const MARCA_CONTROLE = "fluxo-controle:v1";
 export const AUTOR_CONTROLE = "github-actions[bot]";
-/** Fases finais: só nelas o N1 fala com o cliente. Código só conta depois do build validado. */
-export const FASES_FINAIS = ["concluido", "codigo-validado"];
-/** Fases em que uma nova execução não deve repetir trabalho (sem `retomar`). */
-export const FASES_SEM_REPETICAO = [...FASES_FINAIS, "proposta-pronta", "pr-aberto"];
+/** Fases em que já existe resposta do N1 para o cliente. Código só depois do merge confirmado na main. */
+export const FASES_COM_RESPOSTA = ["concluido", "aguardando-cliente", "integrado"];
+/** Fases em que uma nova execução do coordenador não deve repetir trabalho. */
+export const FASES_SEM_REPETICAO = [...FASES_COM_RESPOSTA, "proposta-pronta", "pr-aberto", "codigo-validado", "merge-confirmado", "pendente-instrutor"];
+/** Rodadas automáticas de correção no mesmo PR (versão didática). */
+export const MAX_RODADAS_CORRECAO = 1;
+/** ID estável da resposta do N1: o mesmo em qualquer retomada, então nunca duplica. */
+export const idRespostaN1 = (requestId) => `n1-final-${requestId}`;
+export const marcaMensagem = (id) => `<!-- fluxo-msg:${id} -->`;
+/** Resposta depois do merge: integrado no código, mas o app local de cada pessoa ainda precisa ser atualizado. */
+export const respostaIntegrada = (publicText) =>
+  `${publicText.trim()}\n\nA alteração foi integrada ao código principal do Fluxo. Para ver a novidade, o app local precisa ser atualizado (baixar a versão nova e reiniciar).`.slice(0, LIMITES.publicText);
 /** Prefixo da branch do PR: amarra o PR à issue e ao requestId. */
 export const prefixoBranch = (issue, requestId) => `ai/issue-${issue}-${requestId.slice(0, 8)}`;
 export const LIMITES = { publicText: 2000, internalText: 4000, updates: 20, arquivos: 5, bytesArquivo: 200_000 };
@@ -200,4 +208,5 @@ export function lerControle(comentarios = []) {
 }
 
 /** Evita menções e marcações vindas do modelo nos comentários internos. */
-export const neutralizar = (t) => String(t ?? "").replace(/@/g, "@​").replace(/<!--/g, "&lt;!--");
+// `#123` também é neutralizado: texto vindo do modelo nunca fecha nem referencia issue sozinho ("closes #1").
+export const neutralizar = (t) => String(t ?? "").replace(/@/g, "@​").replace(/#(?=\d)/g, "#​").replace(/<!--/g, "&lt;!--");

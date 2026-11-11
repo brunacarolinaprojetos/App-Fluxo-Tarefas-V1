@@ -86,6 +86,28 @@ Como a conta não tem Copilot pago, os agentes vão usar o **Claude** (Claude Co
 - **Revisor:** registra em uma frase se o diff atende, e essa frase entra no corpo do PR. A conferência no app não roda no Actions; o PR diz isso e pede para abrir o app uma vez.
 - **Executado localmente:** `npm test` (27/27), `npm run build` (ok), a regressão da Etapa 03 (11 OK) e o `registrar-build` contra o GitHub falso: build ok virou `codigo-validado` e build com falha virou `build-falhou`.
 
+## Etapa 05 — Entregar resposta e tratar retomadas (2026-11-11)
+
+- **Entrega com código:** o coordenador abre o PR, o revisor dá o parecer em uma frase no corpo do PR e o `registrar-build` aguarda o build verde do commit atual.
+  - `AUTO_MERGE=false` (configurado no repositório): o PR fica disponível para a demonstração. Quando uma pessoa faz o merge, o evento `pull_request_target` dispara o job `entregar`.
+  - `AUTO_MERGE=true` (só se autorizado): merge do sha conferido pelas regras normais da branch, sem bypass. Se as regras recusarem, o PR fica aberto para o instrutor.
+  - **Depois do merge confirmado na `main`:** resposta do N1 na issue com ID estável (`n1-final-<requestId>`), dizendo que o código foi integrado e que o app local precisa ser atualizado. Em seguida a issue é fechada. O corpo do PR não usa palavra de fechamento, e `#N` vindo do modelo é neutralizado.
+- **Sem código:** dúvida de uso (`answered`) recebe a resposta e a issue é fechada. Esclarecimento pendente (`waiting-customer`) recebe a pergunta e a issue fica aberta.
+- **No app:** o dono vê a resposta quando o app consulta o ticket de novo.
+- **Conferido localmente** com transporte simulado (`conferir-etapa05.mjs`, GitHub falso e backend real), 10 OK:
+  - merge + resposta + fechamento;
+  - retomada sem duplicar a resposta;
+  - mensagem no app do dono;
+  - merge humano disparando a entrega;
+  - uma correção no mesmo PR e, na segunda falha, a pendência do instrutor.
+- `npm test` passou (27/27) e o build também.
+
+**Caminho de retomada.** O estado fica no comentário de controle da issue, e toda retomada é um `workflow_dispatch` com o número da issue. O controlador relê esse estado e continua de onde parou, sem refazer etapas concluídas:
+- **Depois do merge** (`merge-confirmado` ou `integrado`): só publica a resposta do N1, que nunca duplica por causa do ID estável, e fecha a issue. Não chama a IA nem mexe no PR.
+- **Build ou aceite falhando:** a primeira falha pede automaticamente uma correção no MESMO PR (fase `corrigindo`), com o erro curto e o requestId. Se o pedido for interrompido, um novo dispatch retoma essa mesma correção. Se falhar de novo, a fase vira `pendente-instrutor` e nada mais roda sozinho; o instrutor decide e pode autorizar mais uma rodada no mesmo PR com `retomar=true`.
+- **Interrupção durante a chamada à IA** (`incerto`): só segue com `retomar=true`.
+- Nenhum caminho cria outro ticket ou outra issue.
+
 ### Pendência
 
 Para sair do dry-run: cadastrar o secret `AI_API_KEY` (chave da Anthropic) e mudar `AGENT_DRY_RUN` para `false`.

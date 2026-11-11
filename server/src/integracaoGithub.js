@@ -5,7 +5,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { AUTOR_CONTROLE, FASES_FINAIS, LIMITES, ROTULO_ORIGEM, corpoDaIssue, lerControle } from "../../scripts/agentes/contrato.mjs";
+import { AUTOR_CONTROLE, FASES_COM_RESPOSTA, LIMITES, ROTULO_ORIGEM, corpoDaIssue, lerControle } from "../../scripts/agentes/contrato.mjs";
 
 const executar = promisify(execFile);
 const INTERVALO_CONSULTA = 15_000;
@@ -89,9 +89,10 @@ export async function reconciliar(db, ticketId, { entregar }) {
   if (!estado || estado.ticketId !== ticketId || estado.requestId !== v.request_id) return;
   db.prepare("UPDATE ticket_github SET fase = ?, run_id = ?, pr_url = ? WHERE ticket_id = ?").run(estado.fase, estado.runId ?? null, estado.prUrl ?? null, ticketId);
 
-  if (!FASES_FINAIS.includes(estado.fase)) return;
-  const publicText = typeof estado.relatorio?.publicText === "string" ? estado.relatorio.publicText.trim().slice(0, LIMITES.publicText) : "";
-  const idMensagem = `n1-final-${v.request_id}`;
+  // Só entrega o que o controlador confirmou: sem código, resposta validada; com código, só depois do merge na main.
+  if (!FASES_COM_RESPOSTA.includes(estado.fase)) return;
+  const publicText = typeof estado.respostaFinal?.texto === "string" ? estado.respostaFinal.texto.trim().slice(0, LIMITES.publicText) : "";
+  const idMensagem = typeof estado.respostaFinal?.id === "string" ? estado.respostaFinal.id : `n1-final-${v.request_id}`;
   const enviadas = JSON.parse(v.mensagens_enviadas || "[]");
   if (publicText && !enviadas.includes(idMensagem)) {
     entregar(publicText);

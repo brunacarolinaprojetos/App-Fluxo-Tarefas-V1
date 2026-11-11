@@ -5,6 +5,10 @@ name: ai-agents
 on:
   issues:
     types: [opened]
+  # Merge feito por uma pessoa (AUTO_MERGE=false): dispara a entrega. pull_request_target roda a definição
+  # da branch padrão e este workflow nunca faz checkout do código do PR com permissão de escrita.
+  pull_request_target:
+    types: [closed]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -20,7 +24,7 @@ permissions: {}
 
 # Uma execução por issue de cada vez; a seguinte relê o estado e não repete etapas concluídas.
 concurrency:
-  group: ai-agents-issue-${{ github.event.issue.number || inputs.issue_number }}
+  group: ai-agents-issue-${{ github.event.issue.number || inputs.issue_number || github.event.pull_request.head.ref }}
   cancel-in-progress: false
 
 env:
@@ -134,14 +138,62 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts
-      - run: npm run build
-      - run: npm test
+      - run: npm run build 2>&1 | tee build.log
+      - run: npm test 2>&1 | tee -a build.log
+      # Só o final do log segue para o pedido de correção (dado, não instrução).
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ needs.propor-pr.outputs.sha }}
+          path: build.log
+          retention-days: 7
 
   # Registra o resultado na issue e confere o aceite (origem do PR, requestId, caminhos, build do commit).
   # Usa o controlador da branch padrão; não executa o código candidato.
   registrar-build:
     needs: [propor-pr, build-proposta]
     if: always() && needs.propor-pr.outputs.branch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Escrita só para o que este passo faz: merge opcional (contents/pull-requests), comentários (issues)
+    # e o dispatch da única rodada de correção (actions).
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        if: needs.build-proposta.result == 'failure'
+        continue-on-error: true
+        with:
+          name: build-log-${{ needs.propor-pr.outputs.sha }}
+          path: .agentes/
+      - run: node scripts/agentes/controlador.mjs registrar-build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_RESULT: ${{ needs.build-proposta.result }}
+          BUILD_SHA: ${{ needs.propor-pr.outputs.sha }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTO_MERGE: ${{ vars.AUTO_MERGE || 'false' }}
+
+  # Entrega depois do merge confirmado na main: resposta do N1 com ID estável e fechamento da issue.
+  # Também é a retomada: workflow_dispatch numa issue já integrada refaz só resposta/fechamento.
+  entregar:
+    needs: coordenar
+    if: >-
+      always() && vars.AGENT_RUNTIME == 'github-actions' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && github.event.pull_request.merged &&
+        startsWith(github.event.pull_request.head.ref, 'ai/issue-') &&
+        github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -156,8 +208,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: node scripts/agentes/controlador.mjs registrar-build
+      - run: node scripts/agentes/controlador.mjs entregar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUILD_RESULT: ${{ needs.build-proposta.result }}
-          BUILD_SHA: ${{ needs.propor-pr.outputs.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
